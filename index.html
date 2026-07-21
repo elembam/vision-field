@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Vision Field — Camera</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Vision Field Cam">
+<meta name="theme-color" content="#000000">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&display=swap');
+  :root{
+    --fovea:#e0525c;
+    --parafovea:#e8a23f;
+    --macula:#3ec9a0;
+    --peripheral:#5a8fe0;
+    --comfort:#c9c9c9;
+    --ink:#f2f2f2;
+  }
+  *{box-sizing:border-box; -webkit-user-select:none; user-select:none;}
+  html,body{
+    margin:0; padding:0; width:100%; height:100%;
+    background:#000; color:var(--ink);
+    font-family:'IBM Plex Sans Condensed',sans-serif;
+    overscroll-behavior:none; -webkit-touch-callout:none;
+    overflow:hidden;
+  }
+  #stage{position:fixed; inset:0; overflow:hidden;}
+  video{
+    position:absolute; inset:0; width:100%; height:100%;
+    object-fit:cover; background:#111;
+  }
+  svg#overlay{position:absolute; inset:0; width:100%; height:100%; touch-action:none;}
+
+  #startScreen{
+    position:fixed; inset:0; z-index:20; background:#0c1116;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    padding:30px; text-align:center; gap:16px;
+  }
+  #startScreen h1{font-size:20px; margin:0; font-weight:700;}
+  #startScreen p{font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:#9aa7ac; line-height:1.6; max-width:320px; margin:0;}
+  button.big{
+    font-family:'IBM Plex Mono',monospace; font-size:13px; letter-spacing:.04em; text-transform:uppercase;
+    background:var(--ink); color:#0c1116; border:none; padding:14px 26px; margin-top:6px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #errorMsg{color:var(--fovea); font-family:'IBM Plex Mono',monospace; font-size:12px; margin-top:10px; display:none; max-width:320px;}
+
+  .hud{position:fixed; z-index:10; font-family:'IBM Plex Mono',monospace;}
+  #topHud{top:calc(10px + env(safe-area-inset-top)); left:12px; right:12px; display:flex; justify-content:space-between; align-items:flex-start; pointer-events:none;}
+  #topHud .tag{background:rgba(0,0,0,0.55); padding:5px 9px; font-size:11px; letter-spacing:.04em; pointer-events:auto;}
+  #calibBadge.uncal{color:var(--parafovea);}
+  #calibBadge.cal{color:var(--macula);}
+
+  #legend{position:fixed; z-index:10; left:12px; bottom:calc(12px + env(safe-area-inset-bottom)); display:flex; flex-direction:column; gap:4px; font-size:10.5px; background:rgba(0,0,0,0.5); padding:8px 10px; pointer-events:none;}
+  #legend div{display:flex; align-items:center; gap:6px;}
+  #legend .sw{width:14px; height:2px; display:inline-block;}
+
+  #panel{
+    position:fixed; z-index:15; left:0; right:0; bottom:0;
+    background:rgba(10,14,17,0.92); backdrop-filter:blur(6px);
+    padding:14px 16px calc(14px + env(safe-area-inset-bottom));
+    transform:translateY(0); transition:transform .25s ease;
+    border-top:1px solid #2a333a;
+  }
+  #panel.collapsed{transform:translateY(calc(100% - 40px));}
+  #panelHandle{
+    display:flex; justify-content:center; align-items:center; height:26px; margin:-14px -16px 6px;
+    cursor:pointer;
+  }
+  #panelHandle .bar{width:36px; height:4px; background:#555; border-radius:2px;}
+  .row{margin-bottom:12px;}
+  .row label{display:flex; justify-content:space-between; font-family:'IBM Plex Mono',monospace; font-size:11px; text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px; color:#b7c0c4;}
+  .row label span.val{color:var(--ink); font-weight:600;}
+  input[type=range]{width:100%; accent-color:var(--macula);}
+  .btnrow{display:flex; gap:8px; flex-wrap:wrap;}
+  button.small{
+    font-family:'IBM Plex Mono',monospace; font-size:11px; text-transform:uppercase; letter-spacing:.03em;
+    background:transparent; color:var(--ink); border:1.5px solid #556069; padding:8px 12px;
+  }
+  button.small.primary{background:var(--macula); color:#0c1116; border-color:var(--macula);}
+  button.small.danger{border-color:var(--fovea); color:var(--fovea);}
+
+  #calibOverlay{position:fixed; inset:0; z-index:18; display:none;}
+  #calibOverlay.active{display:block;}
+  #calibPanel{
+    position:fixed; z-index:19; left:0; right:0; bottom:0;
+    background:rgba(10,14,17,0.95); padding:14px 16px calc(14px + env(safe-area-inset-bottom));
+    display:none; border-top:1px solid #2a333a;
+  }
+  #calibPanel.active{display:block;}
+  .preset2{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;}
+  button.preset2{font-family:'IBM Plex Mono',monospace; font-size:10.5px; border:1.5px solid #556069; background:transparent; color:var(--ink); padding:6px 10px;}
+  button.preset2.active{background:var(--ink); color:#0c1116;}
+  .handle{position:absolute; width:34px; height:34px; margin:-17px; border-radius:50%; background:rgba(62,201,160,0.25); border:2px solid var(--macula); touch-action:none;}
+  .caliHint{position:fixed; top:calc(10px + env(safe-area-inset-top)); left:12px; right:12px; text-align:center; z-index:19; font-family:'IBM Plex Mono',monospace; font-size:11.5px; background:rgba(0,0,0,0.6); padding:8px 10px; display:none;}
+  .caliHint.active{display:block;}
+</style>
+</head>
+<body>
+
+<div id="startScreen">
+  <h1>Vision Field — Camera</h1>
+  <p>Live acuity-zone overlay on the camera feed. Needs camera access and, ideally, a one-time calibration against something of known size, since the web can't read the lens's real field of view.</p>
+  <button class="big" id="startBtn">Enable camera</button>
+  <div id="errorMsg"></div>
+</div>
+
+<div id="stage">
+  <video id="video" playsinline muted autoplay></video>
+  <svg id="overlay"></svg>
+</div>
+
+<div class="hud" id="topHud">
+  <div class="tag" id="calibBadge">uncalibrated (approx. 68° FOV)</div>
+  <div class="tag" id="distTag">2.0 m</div>
+</div>
+
+<div id="legend"></div>
+
+<div class="caliHint" id="caliHint">Drag both markers to the two edges of your reference object, then enter its real width and distance below.</div>
+<div id="calibOverlay">
+  <div class="handle" id="handleA" style="left:35%; top:50%;"></div>
+  <div class="handle" id="handleB" style="left:65%; top:50%;"></div>
+</div>
+
+<div id="calibPanel">
+  <div class="preset2" id="calibPresets">
+    <button class="preset2 active" data-w="21">A4 short edge, 21 cm</button>
+    <button class="preset2" data-w="29.7">A4 long edge, 29.7 cm</button>
+    <button class="preset2" data-w="8.56">Credit card width, 8.56 cm</button>
+  </div>
+  <div class="row"><label>Reference object width <span class="val" id="calibWVal">21.0 cm</span></label>
+    <input type="range" id="calibW" min="3" max="40" step="0.01" value="21"></div>
+  <div class="row"><label>Distance to reference object <span class="val" id="calibDVal">50 cm</span></label>
+    <input type="range" id="calibD" min="15" max="200" step="1" value="50"></div>
+  <div class="btnrow">
+    <button class="small primary" id="calibSave">Save calibration</button>
+    <button class="small" id="calibCancel">Cancel</button>
+  </div>
+</div>
+
+<div id="panel" class="collapsed">
+  <div id="panelHandle"><div class="bar"></div></div>
+  <div class="row"><label>Distance to subject <span class="val" id="distVal">2.0 m</span></label>
+    <input type="range" id="dist" min="0.3" max="8" step="0.1" value="2.0"></div>
+  <div class="btnrow">
+    <button class="small primary" id="calibrateBtn">Calibrate to known object</button>
+    <button class="small danger" id="resetCalib">Reset calibration</button>
+  </div>
+</div>
+
+<script>
+const ZONES = [
+  {key:'fovea', label:'Foveal',  angle:2,  color:'var(--fovea)'},
+  {key:'para',  label:'Parafoveal', angle:5,  color:'var(--parafovea)'},
+  {key:'macula',label:'Macular', angle:18, color:'var(--macula)'},
+  {key:'peri',  label:'Near-peripheral', angle:30, color:'var(--peripheral)'},
+];
+const COMFORT_ANGLE = 40;
+const REAL = {fovea:'#e0525c', para:'#e8a23f', macula:'#3ec9a0', peri:'#5a8fe0'};
+function toRad(d){return d*Math.PI/180;}
+
+const video = document.getElementById('video');
+const overlay = document.getElementById('overlay');
+const startScreen = document.getElementById('startScreen');
+const startBtn = document.getElementById('startBtn');
+const errorMsg = document.getElementById('errorMsg');
+const panel = document.getElementById('panel');
+const panelHandle = document.getElementById('panelHandle');
+const distEl = document.getElementById('dist');
+const distVal = document.getElementById('distVal');
+const distTag = document.getElementById('distTag');
+const calibBadge = document.getElementById('calibBadge');
+
+let fixation = {x:0.5, y:0.5}; // fraction of viewport
+let focalLengthPx = null; // calibrated
+let uncalibratedFocal = () => (window.innerWidth/2) / Math.tan(toRad(68)/2);
+
+function loadCalib(){
+  const v = localStorage.getItem('vf_focalLengthPx');
+  if(v){ focalLengthPx = parseFloat(v); }
+}
+function saveCalib(f){
+  focalLengthPx = f;
+  localStorage.setItem('vf_focalLengthPx', String(f));
+}
+function clearCalib(){
+  focalLengthPx = null;
+  localStorage.removeItem('vf_focalLengthPx');
+}
+loadCalib();
+
+function currentFocal(){ return focalLengthPx || uncalibratedFocal(); }
+
+function updateBadge(){
+  if(focalLengthPx){
+    const fovDeg = 2*Math.atan((window.innerWidth/2)/focalLengthPx)*180/Math.PI;
+    calibBadge.textContent = `calibrated — ${fovDeg.toFixed(0)}° horiz. FOV`;
+    calibBadge.className = 'cal';
+  } else {
+    calibBadge.textContent = 'uncalibrated (approx. 68° FOV)';
+    calibBadge.className = 'uncal';
+  }
+}
+
+function render(){
+  const W = window.innerWidth, H = window.innerHeight;
+  overlay.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const distM = parseFloat(distEl.value);
+  distVal.textContent = distM.toFixed(1)+' m';
+  distTag.textContent = distM.toFixed(1)+' m';
+  const distCm = distM*100;
+  const focal = currentFocal();
+
+  const fx = fixation.x*W, fy = fixation.y*H;
+
+  let m = '';
+  [...ZONES].reverse().forEach(z=>{
+    const r = focal*Math.tan(toRad(z.angle)/2);
+    m += `<circle cx="${fx}" cy="${fy}" r="${r}" fill="none" stroke="${REAL[z.key]}" stroke-width="2.5" opacity="0.9"/>`;
+  });
+  const rc = focal*Math.tan(toRad(COMFORT_ANGLE)/2);
+  m += `<circle cx="${fx}" cy="${fy}" r="${rc}" fill="none" stroke="#cccccc" stroke-width="1.5" stroke-dasharray="7 6" opacity="0.8"/>`;
+
+  m += `<line x1="${fx-14}" y1="${fy}" x2="${fx+14}" y2="${fy}" stroke="#fff" stroke-width="1.5"/>`;
+  m += `<line x1="${fx}" y1="${fy-14}" x2="${fx}" y2="${fy+14}" stroke="#fff" stroke-width="1.5"/>`;
+  m += `<circle cx="${fx}" cy="${fy}" r="3" fill="#fff"/>`;
+
+  // physical diameter labels for each zone at this distance
+  ZONES.forEach((z,i)=>{
+    const diamCm = 2*distCm*Math.tan(toRad(z.angle)/2);
+    const r = focal*Math.tan(toRad(z.angle)/2);
+    const ly = fy - r;
+    if(ly > 20){
+      m += `<text x="${fx+6}" y="${ly-4}" font-family="IBM Plex Mono" font-size="11" fill="${REAL[z.key]}">${diamCm.toFixed(0)} cm</text>`;
+    }
+  });
+
+  overlay.innerHTML = m;
+  updateBadge();
+}
+
+function buildLegend(){
+  let l = '';
+  ZONES.forEach(z=> l += `<div><span class="sw" style="background:${REAL[z.key]}"></span>${z.label} ${z.angle}°</div>`);
+  l += `<div><span class="sw" style="background:#cccccc"></span>Comfort glance ${COMFORT_ANGLE}°</div>`;
+  document.getElementById('legend').innerHTML = l;
+}
+buildLegend();
+
+// tap to set fixation
+overlay.addEventListener('pointerdown', (e)=>{
+  if(document.getElementById('calibOverlay').classList.contains('active')) return;
+  fixation = {x:e.clientX/window.innerWidth, y:e.clientY/window.innerHeight};
+  render();
+});
+
+distEl.addEventListener('input', render);
+window.addEventListener('resize', render);
+
+// panel collapse
+panelHandle.addEventListener('click', ()=> panel.classList.toggle('collapsed'));
+
+// camera start
+startBtn.addEventListener('click', async ()=>{
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080} },
+      audio:false
+    });
+    video.srcObject = stream;
+    await video.play();
+    startScreen.style.display = 'none';
+    panel.classList.remove('collapsed');
+    render();
+  }catch(err){
+    errorMsg.style.display='block';
+    if(location.protocol !== 'https:' && location.hostname !== 'localhost'){
+      errorMsg.textContent = "Camera needs HTTPS. This page must be hosted with a real https:// URL — a local file won't be allowed camera access on iOS.";
+    } else {
+      errorMsg.textContent = 'Camera access failed or was denied: '+err.message;
+    }
+  }
+});
+
+/* ---------- calibration ---------- */
+const calibrateBtn = document.getElementById('calibrateBtn');
+const resetCalib = document.getElementById('resetCalib');
+const calibOverlay = document.getElementById('calibOverlay');
+const calibPanel = document.getElementById('calibPanel');
+const caliHint = document.getElementById('caliHint');
+const handleA = document.getElementById('handleA');
+const handleB = document.getElementById('handleB');
+const calibW = document.getElementById('calibW');
+const calibD = document.getElementById('calibD');
+const calibWVal = document.getElementById('calibWVal');
+const calibDVal = document.getElementById('calibDVal');
+const calibPresets = document.getElementById('calibPresets');
+const calibSave = document.getElementById('calibSave');
+const calibCancel = document.getElementById('calibCancel');
+
+calibPresets.querySelectorAll('button').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    calibPresets.querySelectorAll('button').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    calibW.value = btn.dataset.w;
+    updateCalibLabels();
+  });
+});
+function updateCalibLabels(){
+  calibWVal.textContent = parseFloat(calibW.value).toFixed(2)+' cm';
+  calibDVal.textContent = parseFloat(calibD.value).toFixed(0)+' cm';
+}
+[calibW,calibD].forEach(el=>el.addEventListener('input', updateCalibLabels));
+
+calibrateBtn.addEventListener('click', ()=>{
+  panel.classList.add('collapsed');
+  calibOverlay.classList.add('active');
+  calibPanel.classList.add('active');
+  caliHint.classList.add('active');
+  updateCalibLabels();
+});
+function closeCalibUI(){
+  calibOverlay.classList.remove('active');
+  calibPanel.classList.remove('active');
+  caliHint.classList.remove('active');
+}
+calibCancel.addEventListener('click', closeCalibUI);
+
+calibSave.addEventListener('click', ()=>{
+  const ax = parseFloat(handleA.style.left)/100*window.innerWidth;
+  const bx = parseFloat(handleB.style.left)/100*window.innerWidth;
+  const pxWidth = Math.abs(bx-ax);
+  const wCm = parseFloat(calibW.value);
+  const dCm = parseFloat(calibD.value);
+  const focal = pxWidth * dCm / wCm;
+  saveCalib(focal);
+  closeCalibUI();
+  render();
+});
+
+resetCalib.addEventListener('click', ()=>{
+  clearCalib();
+  render();
+});
+
+function makeDraggable(handle){
+  let dragging = false;
+  function toPct(clientX, clientY){
+    handle.style.left = (clientX/window.innerWidth*100)+'%';
+    handle.style.top = (clientY/window.innerHeight*100)+'%';
+  }
+  handle.addEventListener('pointerdown', (e)=>{ dragging=true; handle.setPointerCapture(e.pointerId); });
+  handle.addEventListener('pointermove', (e)=>{ if(dragging) toPct(e.clientX, e.clientY); });
+  handle.addEventListener('pointerup', ()=>{ dragging=false; });
+}
+makeDraggable(handleA);
+makeDraggable(handleB);
+
+updateBadge();
+</script>
+</body>
+</html>
