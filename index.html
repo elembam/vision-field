@@ -399,6 +399,177 @@ function blurredCopy(sigmaPx){
   return c;
 }
 
+function renderCanvas2DFallback(focal, ppd, octx){
+  for(let i=BANDS.length-1; i>=0; i--){
+    const band = BANDS[i];
+    const sigma = sigmaForBand(band, ppd);
+    const layer = blurredCopy(sigma); // one scratch canvas per band, not two
+    const rOuter = band.outer>1000 ? Math.hypot(workW,workH) : focal*Math.tan(toRad(band.outer));
+    const rInner = focal*Math.tan(toRad(band.inner));
+    const feather = Math.max(4, (rOuter-rInner)*0.35);
+
+    const lctx = layer.getContext('2d');
+    const grad = lctx.createRadialGradient(fixation.x,fixation.y, Math.max(0,rOuter-feather), fixation.x,fixation.y, rOuter);
+    grad.addColorStop(0,'rgba(255,255,255,1)');
+    grad.addColorStop(1,'rgba(255,255,255,0)');
+    lctx.globalCompositeOperation='destination-in';
+    lctx.fillStyle = grad;
+    lctx.fillRect(0,0,workW,workH);
+
+    octx.drawImage(layer,0,0);
+  }
+}
+
+// ---- Continuous WebGL foveation renderer ----
+// Replaces the discrete band loop above with a single per-pixel shader
+// pass: each fragment computes its own eccentricity and samples a mipmap
+// level chosen by the same cortical-magnification formula used everywhere
+// else in this file. E2/FOVEAL_ACUITY/BLUR_VISIBILITY_GAIN are not
+// duplicated here — passed in as uniforms from the same JS constants.
+// Falls back to renderCanvas2DFallback (above) if WebGL2 is unavailable
+// or the context is lost, so this is additive, not a hard requirement.
+const GL_VERT_SRC = `#version 300 es
+in vec2 aPos;
+out vec2 vUv;
+void main(){
+  vUv = aPos*0.5+0.5;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}`;
+
+// Mip level N approximates a box-filter blur at ~2^N texels — not a true
+// Gaussian, but the standard approximation real-time foveated renderers
+// use (sampling a precomputed mip is O(1) per pixel; a true spatially
+// varying Gaussian convolution would be far too slow per-pixel).
+const GL_FRAG_SRC = `#version 300 es
+precision highp float;
+uniform sampler2D uImage;
+uniform vec2 uFixationUV;
+uniform vec2 uResolution;
+uniform float uFocalPx;
+uniform float uE2;
+uniform float uFovealAcuity;
+uniform float uGain;
+uniform float uMaxLod;
+in vec2 vUv;
+out vec4 fragColor;
+void main(){
+  vec2 pxOffset = (vUv - uFixationUV) * uResolution;
+  float rPx = length(pxOffset);
+  float eDeg = degrees(atan(rPx / uFocalPx));
+  float cutoff = uFovealAcuity / (1.0 + eDeg / uE2);
+  float ppd = uFocalPx * (3.14159265 / 180.0);
+  float sigma = uGain * ppd / (2.0 * cutoff);
+  float lod = clamp(log2(max(sigma, 0.0001)), 0.0, uMaxLod);
+  fragColor = textureLod(uImage, vUv, lod);
+}`;
+
+let glState = null;       // lazily-initialized { glCanvas, gl, program, ... }
+let glUnavailable = false; // sticky once init fails or context is permanently lost
+
+function initGL(){
+  if(glUnavailable) return null;
+  if(glState) return glState;
+
+  const glCanvas = document.createElement('canvas'); // never attached to the DOM
+  const gl = glCanvas.getContext('webgl2', { preserveDrawingBuffer: true });
+  if(!gl){ glUnavailable = true; return null; }
+
+  function compile(type, src){
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+      console.error('Foveation shader compile failed:', gl.getShaderInfoLog(s));
+      gl.deleteShader(s);
+      return null;
+    }
+    return s;
+  }
+  const vs = compile(gl.VERTEX_SHADER, GL_VERT_SRC);
+  const fs = compile(gl.FRAGMENT_SHADER, GL_FRAG_SRC);
+  if(!vs || !fs){ glUnavailable = true; return null; }
+
+  const program = gl.createProgram();
+  gl.attachShader(program, vs);
+  gl.attachShader(program, fs);
+  gl.linkProgram(program);
+  if(!gl.getProgramParameter(program, gl.LINK_STATUS)){
+    console.error('Foveation shader link failed:', gl.getProgramInfoLog(program));
+    glUnavailable = true;
+    return null;
+  }
+
+  const posBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const aPos = gl.getAttribLocation(program, 'aPos');
+  const texture = gl.createTexture();
+
+  const uniforms = {};
+  ['uImage','uFixationUV','uResolution','uFocalPx','uE2','uFovealAcuity','uGain','uMaxLod'].forEach(name=>{
+    uniforms[name] = gl.getUniformLocation(program, name);
+  });
+
+  // This app has already hit one real iOS memory-pressure crash
+  // (HANDOVER.md) — treat context loss as an expected, recoverable case
+  // rather than an unhandled failure: fall back to Canvas2D immediately,
+  // and allow lazy re-init if the context comes back.
+  glCanvas.addEventListener('webglcontextlost', (e)=>{
+    e.preventDefault();
+    glUnavailable = true;
+    glState = null;
+  });
+  glCanvas.addEventListener('webglcontextrestored', ()=>{
+    glUnavailable = false;
+  });
+
+  glState = { glCanvas, gl, program, posBuf, aPos, texture, uniforms };
+  return glState;
+}
+
+function renderWebGL(focal){
+  const st = initGL();
+  if(!st) return null;
+  const { glCanvas, gl, program, posBuf, aPos, texture, uniforms } = st;
+
+  // glCanvas is sized to exactly workW x workH — the source texture's
+  // texel resolution — so eccentricity math (in texel space) and the
+  // generated mip chain agree with the output framebuffer resolution.
+  glCanvas.width = workW; glCanvas.height = workH;
+  gl.viewport(0, 0, workW, workH);
+
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, srcCanvas);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  gl.useProgram(program);
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.uniform1i(uniforms.uImage, 0);
+  gl.uniform2f(uniforms.uFixationUV, fixation.x/workW, fixation.y/workH);
+  gl.uniform2f(uniforms.uResolution, workW, workH);
+  gl.uniform1f(uniforms.uFocalPx, focal);
+  gl.uniform1f(uniforms.uE2, E2);
+  gl.uniform1f(uniforms.uFovealAcuity, FOVEAL_ACUITY);
+  gl.uniform1f(uniforms.uGain, BLUR_VISIBILITY_GAIN);
+  gl.uniform1f(uniforms.uMaxLod, Math.floor(Math.log2(Math.max(workW,workH))));
+
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  return glCanvas;
+}
+
 document.getElementById('applyBtn').addEventListener('click', ()=>{
   if(!srcCanvas || !fixation) return;
   try{
@@ -409,23 +580,11 @@ document.getElementById('applyBtn').addEventListener('click', ()=>{
     output.width = workW; output.height = workH;
     const octx = output.getContext('2d');
 
-    for(let i=BANDS.length-1; i>=0; i--){
-      const band = BANDS[i];
-      const sigma = sigmaForBand(band, ppd);
-      const layer = blurredCopy(sigma); // one scratch canvas per band, not two
-      const rOuter = band.outer>1000 ? Math.hypot(workW,workH) : focal*Math.tan(toRad(band.outer));
-      const rInner = focal*Math.tan(toRad(band.inner));
-      const feather = Math.max(4, (rOuter-rInner)*0.35);
-
-      const lctx = layer.getContext('2d');
-      const grad = lctx.createRadialGradient(fixation.x,fixation.y, Math.max(0,rOuter-feather), fixation.x,fixation.y, rOuter);
-      grad.addColorStop(0,'rgba(255,255,255,1)');
-      grad.addColorStop(1,'rgba(255,255,255,0)');
-      lctx.globalCompositeOperation='destination-in';
-      lctx.fillStyle = grad;
-      lctx.fillRect(0,0,workW,workH);
-
-      octx.drawImage(layer,0,0);
+    const glResult = renderWebGL(focal);
+    if(glResult){
+      octx.drawImage(glResult, 0, 0);
+    } else {
+      renderCanvas2DFallback(focal, ppd, octx);
     }
 
     ctx.clearRect(0,0,workW,workH);
