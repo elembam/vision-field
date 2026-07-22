@@ -217,6 +217,7 @@ async function loadImageFile(file){
 
   fixation = {x:workW/2, y:workH/2};
   focalLengthPx = null;
+  window.__lastRender = null; // new photo — any prior blur render is stale
   updateBadge();
   drawPreview();
 }
@@ -279,6 +280,7 @@ canvasWrap.addEventListener('pointerdown', (e)=>{
   const rect = canvas.getBoundingClientRect();
   const scaleX = workW/rect.width, scaleY = workH/rect.height;
   fixation = {x:(e.clientX-rect.left)*scaleX, y:(e.clientY-rect.top)*scaleY};
+  window.__lastRender = null; // fixation moved — any prior blur render is stale
   drawPreview();
 });
 
@@ -336,9 +338,10 @@ calibSave.addEventListener('click', ()=>{
   focalLengthPx = pxWidthWork*dCm/wCm;
   closeCalibUI();
   updateBadge();
+  window.__lastRender = null; // focal length changed — any prior blur render is stale
   drawPreview();
 });
-resetCalib.addEventListener('click', ()=>{ focalLengthPx=null; updateBadge(); drawPreview(); });
+resetCalib.addEventListener('click', ()=>{ focalLengthPx=null; updateBadge(); window.__lastRender=null; drawPreview(); });
 
 function makeDraggable(handle){
   let dragging=false;
@@ -358,7 +361,13 @@ makeDraggable(handleA); makeDraggable(handleB);
 document.getElementById('toggleRings').addEventListener('click', (e)=>{
   showRings = !showRings;
   e.target.textContent = showRings ? 'Hide zone rings' : 'Show zone rings';
-  drawPreview();
+  // Overlay on whatever is currently valid: the last applied blur render if
+  // fixation/calibration haven't changed since, otherwise the sharp source.
+  const base = window.__lastRender || srcCanvas;
+  ctx.clearRect(0,0,workW,workH);
+  ctx.drawImage(base,0,0);
+  drawFixationMarker();
+  if(showRings) drawRings();
 });
 
 function pxPerDegree0(focal){ return focal*(Math.PI/180); }
@@ -538,7 +547,7 @@ function renderWebGL(focal){
   glCanvas.width = workW; glCanvas.height = workH;
   gl.viewport(0, 0, workW, workH);
 
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
   gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
   gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
 
