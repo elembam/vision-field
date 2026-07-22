@@ -126,6 +126,7 @@
         <button class="small wide" id="saveImg">Save / share result</button>
       </div>
       <div class="legend" id="legend"></div>
+      <div class="note" id="debugInfo" style="font-family:'IBM Plex Mono',monospace;"></div>
       <div class="note">Blur strength per band follows the standard cortical-magnification model (acuity &asymp; acuity&#8320; / (1 + eccentricity/E2), E2 &asymp; 2.3&deg;) &mdash; the same falloff used in foveated-rendering research, applied here as discrete bands rather than a continuous gradient.</div>
     </div>
   </div>
@@ -378,10 +379,12 @@ const BANDS = [
 // the cortical-magnification model, but even at native device-pixel
 // resolution it comes out to only a few pixels at most in the far
 // periphery — too subtle to read as "blur" on screen. This multiplies that
-// value up so the falloff is visually legible. Value chosen by comparing
-// renders of a real photo at a few candidates, not backed by a citation —
+// value up so the falloff is visually legible. Not backed by a citation —
 // safe to retune by eye without touching the vision-science constants.
-const BLUR_VISIBILITY_GAIN = 4;
+// First guess (4) was tuned against a synthetic test image and came out
+// too weak on a real on-device photo; raised to 12 as the next data point,
+// still provisional pending another real-photo test.
+const BLUR_VISIBILITY_GAIN = 12;
 
 function sigmaForBand(band, ppd){
   const e = band.outer>1000 ? 30 : (band.inner+band.outer)/2;
@@ -404,6 +407,8 @@ document.getElementById('applyBtn').addEventListener('click', ()=>{
   try{
     const focal = currentFocal();
     const ppd = pxPerDegree0(focal);
+    document.getElementById('debugInfo').textContent =
+      `debug — workW:${workW} dpr:${window.devicePixelRatio||1} ppd:${ppd.toFixed(2)} beyond-sigma:${sigmaForBand(BANDS[BANDS.length-1], ppd).toFixed(2)}px`;
 
     const output = document.createElement('canvas');
     output.width = workW; output.height = workH;
