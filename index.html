@@ -2,154 +2,134 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Vision Field — Camera</title>
+<title>Vision Field — Foveation Filter</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Vision Field Cam">
-<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-title" content="Vision Foveation">
+<meta name="theme-color" content="#0c1116">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&display=swap');
   :root{
-    --fovea:#e0525c;
-    --parafovea:#e8a23f;
-    --macula:#3ec9a0;
-    --peripheral:#5a8fe0;
-    --comfort:#c9c9c9;
-    --ink:#f2f2f2;
+    --fovea:#e0525c; --parafovea:#e8a23f; --macula:#3ec9a0; --peripheral:#5a8fe0; --comfort:#c9c9c9;
+    --ink:#f2f2f2; --bg:#0c1116; --panel:#151b20; --line:#2a333a;
   }
   *{box-sizing:border-box; -webkit-user-select:none; user-select:none;}
-  html,body{
-    margin:0; padding:0; width:100%; height:100%;
-    background:#000; color:var(--ink);
-    font-family:'IBM Plex Sans Condensed',sans-serif;
-    overscroll-behavior:none; -webkit-touch-callout:none;
-    overflow:hidden;
-  }
-  #stage{position:fixed; inset:0; overflow:hidden;}
-  video{
-    position:absolute; inset:0; width:100%; height:100%;
-    object-fit:cover; background:#111;
-  }
-  svg#overlay{position:absolute; inset:0; width:100%; height:100%; touch-action:none;}
-
-  #startScreen{
-    position:fixed; inset:0; z-index:20; background:#0c1116;
-    display:flex; flex-direction:column; align-items:center; justify-content:center;
-    padding:30px; text-align:center; gap:16px;
-  }
-  #startScreen h1{font-size:20px; margin:0; font-weight:700;}
-  #startScreen p{font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:#9aa7ac; line-height:1.6; max-width:320px; margin:0;}
-  button.big{
-    font-family:'IBM Plex Mono',monospace; font-size:13px; letter-spacing:.04em; text-transform:uppercase;
-    background:var(--ink); color:#0c1116; border:none; padding:14px 26px; margin-top:6px;
-    -webkit-tap-highlight-color: transparent;
-  }
-  #errorMsg{color:var(--fovea); font-family:'IBM Plex Mono',monospace; font-size:12px; margin-top:10px; display:none; max-width:320px;}
-
-  .hud{position:fixed; z-index:10; font-family:'IBM Plex Mono',monospace;}
-  #topHud{top:calc(10px + env(safe-area-inset-top)); left:12px; right:12px; display:flex; justify-content:space-between; align-items:flex-start; pointer-events:none;}
-  #topHud .tag{background:rgba(0,0,0,0.55); padding:5px 9px; font-size:11px; letter-spacing:.04em; pointer-events:auto;}
-  #calibBadge.uncal{color:var(--parafovea);}
-  #calibBadge.cal{color:var(--macula);}
-
-  #legend{position:fixed; z-index:10; left:12px; bottom:calc(12px + env(safe-area-inset-bottom)); display:flex; flex-direction:column; gap:4px; font-size:10.5px; background:rgba(0,0,0,0.5); padding:8px 10px; pointer-events:none;}
-  #legend div{display:flex; align-items:center; gap:6px;}
-  #legend .sw{width:14px; height:2px; display:inline-block;}
-
-  #panel{
-    position:fixed; z-index:15; left:0; right:0; bottom:0;
-    background:rgba(10,14,17,0.92); backdrop-filter:blur(6px);
-    padding:14px 16px calc(14px + env(safe-area-inset-bottom));
-    transform:translateY(0); transition:transform .25s ease;
-    border-top:1px solid #2a333a;
-  }
-  #panel.collapsed{transform:translateY(calc(100% - 40px));}
-  #panelHandle{
-    display:flex; justify-content:center; align-items:center; height:26px; margin:-14px -16px 6px;
-    cursor:pointer;
-  }
-  #panelHandle .bar{width:36px; height:4px; background:#555; border-radius:2px;}
-  .row{margin-bottom:12px;}
-  .row label{display:flex; justify-content:space-between; font-family:'IBM Plex Mono',monospace; font-size:11px; text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px; color:#b7c0c4;}
-  .row label span.val{color:var(--ink); font-weight:600;}
-  input[type=range]{width:100%; accent-color:var(--macula);}
-  .btnrow{display:flex; gap:8px; flex-wrap:wrap;}
-  button.small{
-    font-family:'IBM Plex Mono',monospace; font-size:11px; text-transform:uppercase; letter-spacing:.03em;
-    background:transparent; color:var(--ink); border:1.5px solid #556069; padding:8px 12px;
-  }
-  button.small.primary{background:var(--macula); color:#0c1116; border-color:var(--macula);}
-  button.small.danger{border-color:var(--fovea); color:var(--fovea);}
-
-  #calibOverlay{position:fixed; inset:0; z-index:18; display:none;}
-  #calibOverlay.active{display:block;}
-  #calibPanel{
-    position:fixed; z-index:19; left:0; right:0; bottom:0;
-    background:rgba(10,14,17,0.95); padding:14px 16px calc(14px + env(safe-area-inset-bottom));
-    display:none; border-top:1px solid #2a333a;
-  }
-  #calibPanel.active{display:block;}
-  .preset2{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;}
-  button.preset2{font-family:'IBM Plex Mono',monospace; font-size:10.5px; border:1.5px solid #556069; background:transparent; color:var(--ink); padding:6px 10px;}
-  button.preset2.active{background:var(--ink); color:#0c1116;}
-  .handle{position:absolute; width:34px; height:34px; margin:-17px; border-radius:50%; background:rgba(62,201,160,0.25); border:2px solid var(--macula); touch-action:none;}
-  .caliHint{position:fixed; top:calc(10px + env(safe-area-inset-top)); left:12px; right:12px; text-align:center; z-index:19; font-family:'IBM Plex Mono',monospace; font-size:11.5px; background:rgba(0,0,0,0.6); padding:8px 10px; display:none;}
-  .caliHint.active{display:block;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:'IBM Plex Sans Condensed',sans-serif;overscroll-behavior:none;-webkit-touch-callout:none;}
+  .wrap{max-width:720px;margin:0 auto;padding:20px 16px calc(40px + env(safe-area-inset-bottom));}
+  header{border-bottom:2px solid var(--ink);padding-bottom:12px;margin-bottom:18px;}
+  .eyebrow{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#8b979c;margin-bottom:6px;}
+  h1{font-size:22px;margin:0 0 4px;font-weight:700;}
+  .sub{font-size:13px;color:#8b979c;font-family:'IBM Plex Mono',monospace;line-height:1.5;}
+  .section{margin-bottom:22px;}
+  .sectionhead{display:flex;align-items:baseline;gap:10px;margin-bottom:10px;}
+  .sectionhead .idx{font-family:'IBM Plex Mono',monospace;color:#8b979c;font-size:12px;}
+  h2{font-size:15px;margin:0;font-weight:700;}
+  .box{background:var(--panel);border:1.5px solid var(--line);padding:14px 16px;}
+  .filerow{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;}
+  label.filebtn{font-family:'IBM Plex Mono',monospace;font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;background:var(--ink);color:var(--bg);border:none;padding:10px 14px;display:inline-block;cursor:pointer;}
+  label.filebtn.secondary{background:transparent;color:var(--ink);border:1.5px solid #556069;}
+  input[type=file]{display:none;}
+  #canvasWrap{position:relative;width:100%;background:#000;border:1.5px solid var(--line);overflow:hidden;touch-action:none;}
+  canvas{display:block;width:100%;height:auto;}
+  #placeholder{padding:60px 20px;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#5c6a70;}
+  .row{margin:12px 0;}
+  .row label{display:flex;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;color:#b7c0c4;}
+  .row label span.val{color:var(--ink);font-weight:600;}
+  input[type=range]{width:100%;accent-color:var(--macula);}
+  .btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;}
+  button.small{font-family:'IBM Plex Mono',monospace;font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;background:transparent;color:var(--ink);border:1.5px solid #556069;padding:9px 13px;}
+  button.small.primary{background:var(--macula);color:#0c1116;border-color:var(--macula);}
+  button.small.danger{border-color:var(--fovea);color:var(--fovea);}
+  button.small.wide{flex:1;min-width:140px;}
+  .preset2{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;}
+  button.preset2{font-family:'IBM Plex Mono',monospace;font-size:10.5px;border:1.5px solid #556069;background:transparent;color:var(--ink);padding:6px 10px;}
+  button.preset2.active{background:var(--ink);color:#0c1116;}
+  #calibLayer{position:absolute;inset:0;display:none;}
+  #calibLayer.active{display:block;}
+  .handle{position:absolute;width:30px;height:30px;margin:-15px;border-radius:50%;background:rgba(62,201,160,.25);border:2px solid var(--macula);touch-action:none;}
+  .badge{font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 9px;display:inline-block;}
+  .badge.uncal{color:var(--parafovea);background:rgba(232,162,63,.12);}
+  .badge.cal{color:var(--macula);background:rgba(62,201,160,.12);}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;font-family:'IBM Plex Mono',monospace;font-size:10.5px;margin-top:10px;color:#b7c0c4;}
+  .legend div{display:flex;align-items:center;gap:6px;}
+  .sw{width:14px;height:2px;display:inline-block;}
+  .note{font-size:12.5px;color:#8b979c;line-height:1.55;margin-top:10px;}
 </style>
 </head>
 <body>
+<div class="wrap">
 
-<div id="startScreen">
-  <h1>Vision Field — Camera</h1>
-  <p>Live acuity-zone overlay on the camera feed. Needs camera access and, ideally, a one-time calibration against something of known size, since the web can't read the lens's real field of view.</p>
-  <button class="big" id="startBtn">Enable camera</button>
-  <div id="errorMsg"></div>
-</div>
+  <header>
+    <div class="eyebrow">Optical field study</div>
+    <h1>Foveation Filter</h1>
+    <div class="sub">a spatial low-pass filter that gets stronger with eccentricity — fovea sharp, periphery blurred, matching acuity falloff</div>
+  </header>
 
-<div id="stage">
-  <video id="video" playsinline muted autoplay></video>
-  <svg id="overlay"></svg>
-</div>
-
-<div class="hud" id="topHud">
-  <div class="tag" id="calibBadge">uncalibrated (approx. 68° FOV)</div>
-  <div class="tag" id="distTag">2.0 m</div>
-</div>
-
-<div id="legend"></div>
-
-<div class="caliHint" id="caliHint">Drag both markers to the two edges of your reference object, then enter its real width and distance below.</div>
-<div id="calibOverlay">
-  <div class="handle" id="handleA" style="left:35%; top:50%;"></div>
-  <div class="handle" id="handleB" style="left:65%; top:50%;"></div>
-</div>
-
-<div id="calibPanel">
-  <div class="preset2" id="calibPresets">
-    <button class="preset2 active" data-w="21">A4 short edge, 21 cm</button>
-    <button class="preset2" data-w="29.7">A4 long edge, 29.7 cm</button>
-    <button class="preset2" data-w="8.56">Credit card width, 8.56 cm</button>
+  <div class="section">
+    <div class="sectionhead"><span class="idx">01</span><h2>Load an image</h2></div>
+    <div class="box">
+      <div class="filerow">
+        <label class="filebtn">Take photo<input type="file" id="fileCam" accept="image/*" capture="environment"></label>
+        <label class="filebtn secondary">Choose from library<input type="file" id="fileLib" accept="image/*"></label>
+      </div>
+      <span class="badge uncal" id="calibBadge">uncalibrated — approx. 68&deg; FOV assumed</span>
+    </div>
   </div>
-  <div class="row"><label>Reference object width <span class="val" id="calibWVal">21.0 cm</span></label>
-    <input type="range" id="calibW" min="3" max="40" step="0.01" value="21"></div>
-  <div class="row"><label>Distance to reference object <span class="val" id="calibDVal">50 cm</span></label>
-    <input type="range" id="calibD" min="15" max="200" step="1" value="50"></div>
-  <div class="btnrow">
-    <button class="small primary" id="calibSave">Save calibration</button>
-    <button class="small" id="calibCancel">Cancel</button>
-  </div>
-</div>
 
-<div id="panel" class="collapsed">
-  <div id="panelHandle"><div class="bar"></div></div>
-  <div class="row"><label>Distance to subject <span class="val" id="distVal">2.0 m</span></label>
-    <input type="range" id="dist" min="0.3" max="8" step="0.1" value="2.0"></div>
-  <div class="btnrow">
-    <button class="small primary" id="calibrateBtn">Calibrate to known object</button>
-    <button class="small danger" id="resetCalib">Reset calibration</button>
+  <div class="section">
+    <div class="sectionhead"><span class="idx">02</span><h2>Fixation &amp; calibration</h2></div>
+    <div id="canvasWrap">
+      <div id="placeholder">No image loaded yet.<br>Tap "Take photo" or "Choose from library" above.</div>
+      <canvas id="canvas" style="display:none;"></canvas>
+      <div id="calibLayer">
+        <div class="handle" id="handleA" style="left:35%;top:50%;"></div>
+        <div class="handle" id="handleB" style="left:65%;top:50%;"></div>
+      </div>
+    </div>
+    <div class="note" id="tapNote" style="display:none;">Tap anywhere on the image to set the fixation point (the crosshair).</div>
   </div>
+
+  <div class="section" id="calibSection" style="display:none;">
+    <div class="sectionhead"><span class="idx">03</span><h2>Calibrate to a known object</h2></div>
+    <div class="box">
+      <div class="note" style="margin-top:0;">If the photo contains something of known width (an A4 sheet, a credit card), drag the two green markers onto its edges and tell the tool the real width and how far it was from the camera when the photo was taken.</div>
+      <div class="preset2" id="calibPresets">
+        <button class="preset2 active" data-w="21">A4 short edge, 21 cm</button>
+        <button class="preset2" data-w="29.7">A4 long edge, 29.7 cm</button>
+        <button class="preset2" data-w="8.56">Credit card, 8.56 cm</button>
+      </div>
+      <div class="row"><label>Reference object width <span class="val" id="calibWVal">21.0 cm</span></label>
+        <input type="range" id="calibW" min="3" max="40" step="0.01" value="21"></div>
+      <div class="row"><label>Distance from camera to it <span class="val" id="calibDVal">50 cm</span></label>
+        <input type="range" id="calibD" min="10" max="300" step="1" value="50"></div>
+      <div class="btnrow">
+        <button class="small primary wide" id="startCalib">Position markers on image</button>
+      </div>
+      <div class="btnrow" id="calibConfirmRow" style="display:none;">
+        <button class="small primary wide" id="calibSave">Save calibration</button>
+        <button class="small wide" id="calibCancel">Cancel</button>
+      </div>
+      <button class="small danger" id="resetCalib" style="margin-top:8px;">Reset calibration</button>
+    </div>
+  </div>
+
+  <div class="section" id="renderSection" style="display:none;">
+    <div class="sectionhead"><span class="idx">04</span><h2>Render</h2></div>
+    <div class="box">
+      <div class="btnrow">
+        <button class="small primary wide" id="applyBtn">Apply foveation filter</button>
+        <button class="small wide" id="toggleRings">Show zone rings</button>
+      </div>
+      <div class="btnrow" style="margin-top:8px;">
+        <button class="small wide" id="saveImg">Save / share result</button>
+      </div>
+      <div class="legend" id="legend"></div>
+      <div class="note">Blur strength per band follows the standard cortical-magnification model (acuity &asymp; acuity&#8320; / (1 + eccentricity/E2), E2 &asymp; 2.3&deg;) &mdash; the same falloff used in foveated-rendering research, applied here as discrete bands rather than a continuous gradient.</div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -161,146 +141,160 @@ const ZONES = [
 ];
 const COMFORT_ANGLE = 40;
 const REAL = {fovea:'#e0525c', para:'#e8a23f', macula:'#3ec9a0', peri:'#5a8fe0'};
-function toRad(d){return d*Math.PI/180;}
+const E2 = 2.3, FOVEAL_ACUITY = 60; // cycles/deg
 
-const video = document.getElementById('video');
-const overlay = document.getElementById('overlay');
-const startScreen = document.getElementById('startScreen');
-const startBtn = document.getElementById('startBtn');
-const errorMsg = document.getElementById('errorMsg');
-const panel = document.getElementById('panel');
-const panelHandle = document.getElementById('panelHandle');
-const distEl = document.getElementById('dist');
-const distVal = document.getElementById('distVal');
-const distTag = document.getElementById('distTag');
+function toRad(d){return d*Math.PI/180;}
+function cutoffCyclesPerDeg(eDeg){ return FOVEAL_ACUITY/(1+eDeg/E2); }
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const canvasWrap = document.getElementById('canvasWrap');
+const placeholder = document.getElementById('placeholder');
+const tapNote = document.getElementById('tapNote');
+const calibSection = document.getElementById('calibSection');
+const renderSection = document.getElementById('renderSection');
 const calibBadge = document.getElementById('calibBadge');
 
-let fixation = {x:0.5, y:0.5}; // fraction of viewport
-let focalLengthPx = null; // calibrated
-let uncalibratedFocal = () => (window.innerWidth/2) / Math.tan(toRad(68)/2);
+let srcCanvas = null;
+let workW=0, workH=0;
+let fixation = null;
+let focalLengthPx = null;
+let showRings = false;
 
-function loadCalib(){
-  const v = localStorage.getItem('vf_focalLengthPx');
-  if(v){ focalLengthPx = parseFloat(v); }
+// Internal render/display buffer sizing: match the canvas's actual on-screen
+// pixel density (CSS width x devicePixelRatio) instead of a fixed constant.
+// Previously this was a flat 900px regardless of device — meaning on a
+// typical retina phone the buffer was smaller than its own displayed CSS
+// size, so the browser upscaled it for display, and any per-band blur
+// difference was on top of (and diluted by) that extra smoothing. Capped
+// well below the original full-resolution decode that caused the iOS
+// memory-pressure crash (see HANDOVER.md) — this only changes the working
+// canvas's target size; the photo is still resized-on-decode via
+// createImageBitmap below, never fully decoded at native photo resolution.
+const MAX_WORK_W = 1600;
+const MIN_WORK_W = 480;
+function targetWorkWidth(){
+  const rect = canvasWrap.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const ideal = Math.round(rect.width * dpr);
+  return Math.min(MAX_WORK_W, Math.max(MIN_WORK_W, ideal));
 }
-function saveCalib(f){
-  focalLengthPx = f;
-  localStorage.setItem('vf_focalLengthPx', String(f));
-}
-function clearCalib(){
+
+async function loadImageFile(file){
+  const maxW = targetWorkWidth();
+  let bitmap;
+  try{
+    // createImageBitmap with resize options decodes directly at target size,
+    // avoiding ever materializing the full multi-megapixel photo in memory.
+    bitmap = await createImageBitmap(file, { resizeWidth: maxW, resizeQuality: 'medium' });
+  }catch(err){
+    // fallback for browsers without resize-option support
+    const img = await new Promise((res,rej)=>{
+      const url = URL.createObjectURL(file);
+      const im = new Image();
+      im.onload = ()=>{ URL.revokeObjectURL(url); res(im); };
+      im.onerror = rej;
+      im.src = url;
+    });
+    bitmap = img;
+  }
+
+  const scale = Math.min(1, maxW/bitmap.width);
+  workW = Math.round(bitmap.width*scale);
+  workH = Math.round(bitmap.height*scale);
+  srcCanvas = document.createElement('canvas');
+  srcCanvas.width = workW; srcCanvas.height = workH;
+  const sctx = srcCanvas.getContext('2d');
+  sctx.drawImage(bitmap, 0, 0, workW, workH);
+  if(bitmap.close) bitmap.close(); // release the decoded bitmap immediately
+
+  canvas.width = workW; canvas.height = workH;
+  canvas.style.display='block';
+  placeholder.style.display='none';
+  tapNote.style.display='block';
+  calibSection.style.display='block';
+  renderSection.style.display='block';
+
+  fixation = {x:workW/2, y:workH/2};
   focalLengthPx = null;
-  localStorage.removeItem('vf_focalLengthPx');
+  updateBadge();
+  drawPreview();
 }
-loadCalib();
+document.getElementById('fileCam').addEventListener('change', e=>{ if(e.target.files[0]) loadImageFile(e.target.files[0]); });
+document.getElementById('fileLib').addEventListener('change', e=>{ if(e.target.files[0]) loadImageFile(e.target.files[0]); });
 
-function currentFocal(){ return focalLengthPx || uncalibratedFocal(); }
+function defaultFocal(){ return (workW/2)/Math.tan(toRad(68)/2); }
+function currentFocal(){ return focalLengthPx || defaultFocal(); }
 
 function updateBadge(){
   if(focalLengthPx){
-    const fovDeg = 2*Math.atan((window.innerWidth/2)/focalLengthPx)*180/Math.PI;
-    calibBadge.textContent = `calibrated — ${fovDeg.toFixed(0)}° horiz. FOV`;
-    calibBadge.className = 'cal';
+    const fov = 2*Math.atan((workW/2)/focalLengthPx)*180/Math.PI;
+    calibBadge.textContent = `calibrated — ${fov.toFixed(0)}° horiz. FOV for this photo`;
+    calibBadge.className='badge cal';
   } else {
-    calibBadge.textContent = 'uncalibrated (approx. 68° FOV)';
-    calibBadge.className = 'uncal';
+    calibBadge.textContent = 'uncalibrated — approx. 68° FOV assumed';
+    calibBadge.className='badge uncal';
   }
 }
 
-function render(){
-  const W = window.innerWidth, H = window.innerHeight;
-  overlay.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  const distM = parseFloat(distEl.value);
-  distVal.textContent = distM.toFixed(1)+' m';
-  distTag.textContent = distM.toFixed(1)+' m';
-  const distCm = distM*100;
+function drawPreview(){
+  if(!srcCanvas) return;
+  ctx.clearRect(0,0,workW,workH);
+  ctx.drawImage(srcCanvas,0,0);
+  drawFixationMarker();
+  if(showRings) drawRings();
+}
+
+function drawFixationMarker(){
+  if(!fixation) return;
+  ctx.save();
+  ctx.strokeStyle='#fff'; ctx.lineWidth=Math.max(1.5, workW/500);
+  const s = Math.max(10, workW/60);
+  ctx.beginPath();
+  ctx.moveTo(fixation.x-s, fixation.y); ctx.lineTo(fixation.x+s, fixation.y);
+  ctx.moveTo(fixation.x, fixation.y-s); ctx.lineTo(fixation.x, fixation.y+s);
+  ctx.stroke();
+  ctx.beginPath(); ctx.arc(fixation.x, fixation.y, 3, 0, 7); ctx.fillStyle='#fff'; ctx.fill();
+  ctx.restore();
+}
+
+function drawRings(){
   const focal = currentFocal();
-
-  const fx = fixation.x*W, fy = fixation.y*H;
-
-  let m = '';
-  [...ZONES].reverse().forEach(z=>{
+  ctx.save();
+  ctx.lineWidth = Math.max(1.5, workW/450);
+  ZONES.forEach(z=>{
     const r = focal*Math.tan(toRad(z.angle)/2);
-    m += `<circle cx="${fx}" cy="${fy}" r="${r}" fill="none" stroke="${REAL[z.key]}" stroke-width="2.5" opacity="0.9"/>`;
+    ctx.strokeStyle = REAL[z.key];
+    ctx.beginPath(); ctx.arc(fixation.x, fixation.y, r, 0, 7); ctx.stroke();
   });
   const rc = focal*Math.tan(toRad(COMFORT_ANGLE)/2);
-  m += `<circle cx="${fx}" cy="${fy}" r="${rc}" fill="none" stroke="#cccccc" stroke-width="1.5" stroke-dasharray="7 6" opacity="0.8"/>`;
-
-  m += `<line x1="${fx-14}" y1="${fy}" x2="${fx+14}" y2="${fy}" stroke="#fff" stroke-width="1.5"/>`;
-  m += `<line x1="${fx}" y1="${fy-14}" x2="${fx}" y2="${fy+14}" stroke="#fff" stroke-width="1.5"/>`;
-  m += `<circle cx="${fx}" cy="${fy}" r="3" fill="#fff"/>`;
-
-  // physical diameter labels for each zone at this distance
-  ZONES.forEach((z,i)=>{
-    const diamCm = 2*distCm*Math.tan(toRad(z.angle)/2);
-    const r = focal*Math.tan(toRad(z.angle)/2);
-    const ly = fy - r;
-    if(ly > 20){
-      m += `<text x="${fx+6}" y="${ly-4}" font-family="IBM Plex Mono" font-size="11" fill="${REAL[z.key]}">${diamCm.toFixed(0)} cm</text>`;
-    }
-  });
-
-  overlay.innerHTML = m;
-  updateBadge();
+  ctx.strokeStyle = '#cccccc'; ctx.setLineDash([8,6]);
+  ctx.beginPath(); ctx.arc(fixation.x, fixation.y, rc, 0, 7); ctx.stroke();
+  ctx.restore();
 }
 
-function buildLegend(){
-  let l = '';
-  ZONES.forEach(z=> l += `<div><span class="sw" style="background:${REAL[z.key]}"></span>${z.label} ${z.angle}°</div>`);
-  l += `<div><span class="sw" style="background:#cccccc"></span>Comfort glance ${COMFORT_ANGLE}°</div>`;
-  document.getElementById('legend').innerHTML = l;
-}
-buildLegend();
-
-// tap to set fixation
-overlay.addEventListener('pointerdown', (e)=>{
-  if(document.getElementById('calibOverlay').classList.contains('active')) return;
-  fixation = {x:e.clientX/window.innerWidth, y:e.clientY/window.innerHeight};
-  render();
+canvasWrap.addEventListener('pointerdown', (e)=>{
+  if(document.getElementById('calibLayer').classList.contains('active')) return;
+  if(!srcCanvas) return;
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = workW/rect.width, scaleY = workH/rect.height;
+  fixation = {x:(e.clientX-rect.left)*scaleX, y:(e.clientY-rect.top)*scaleY};
+  drawPreview();
 });
 
-distEl.addEventListener('input', render);
-window.addEventListener('resize', render);
-
-// panel collapse
-panelHandle.addEventListener('click', ()=> panel.classList.toggle('collapsed'));
-
-// camera start
-startBtn.addEventListener('click', async ()=>{
-  try{
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video:{ facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080} },
-      audio:false
-    });
-    video.srcObject = stream;
-    await video.play();
-    startScreen.style.display = 'none';
-    panel.classList.remove('collapsed');
-    render();
-  }catch(err){
-    errorMsg.style.display='block';
-    if(location.protocol !== 'https:' && location.hostname !== 'localhost'){
-      errorMsg.textContent = "Camera needs HTTPS. This page must be hosted with a real https:// URL — a local file won't be allowed camera access on iOS.";
-    } else {
-      errorMsg.textContent = 'Camera access failed or was denied: '+err.message;
-    }
-  }
-});
-
-/* ---------- calibration ---------- */
-const calibrateBtn = document.getElementById('calibrateBtn');
-const resetCalib = document.getElementById('resetCalib');
-const calibOverlay = document.getElementById('calibOverlay');
-const calibPanel = document.getElementById('calibPanel');
-const caliHint = document.getElementById('caliHint');
+const calibLayer = document.getElementById('calibLayer');
 const handleA = document.getElementById('handleA');
 const handleB = document.getElementById('handleB');
+const calibPresets = document.getElementById('calibPresets');
 const calibW = document.getElementById('calibW');
 const calibD = document.getElementById('calibD');
 const calibWVal = document.getElementById('calibWVal');
 const calibDVal = document.getElementById('calibDVal');
-const calibPresets = document.getElementById('calibPresets');
+const startCalib = document.getElementById('startCalib');
+const calibConfirmRow = document.getElementById('calibConfirmRow');
 const calibSave = document.getElementById('calibSave');
 const calibCancel = document.getElementById('calibCancel');
+const resetCalib = document.getElementById('resetCalib');
 
 calibPresets.querySelectorAll('button').forEach(btn=>{
   btn.addEventListener('click', ()=>{
@@ -316,51 +310,154 @@ function updateCalibLabels(){
 }
 [calibW,calibD].forEach(el=>el.addEventListener('input', updateCalibLabels));
 
-calibrateBtn.addEventListener('click', ()=>{
-  panel.classList.add('collapsed');
-  calibOverlay.classList.add('active');
-  calibPanel.classList.add('active');
-  caliHint.classList.add('active');
+startCalib.addEventListener('click', ()=>{
+  if(!srcCanvas) return;
+  calibLayer.classList.add('active');
+  startCalib.style.display='none';
+  calibConfirmRow.style.display='flex';
   updateCalibLabels();
 });
 function closeCalibUI(){
-  calibOverlay.classList.remove('active');
-  calibPanel.classList.remove('active');
-  caliHint.classList.remove('active');
+  calibLayer.classList.remove('active');
+  startCalib.style.display='block';
+  calibConfirmRow.style.display='none';
 }
 calibCancel.addEventListener('click', closeCalibUI);
 
 calibSave.addEventListener('click', ()=>{
-  const ax = parseFloat(handleA.style.left)/100*window.innerWidth;
-  const bx = parseFloat(handleB.style.left)/100*window.innerWidth;
-  const pxWidth = Math.abs(bx-ax);
+  const rect = canvas.getBoundingClientRect();
+  const ax = parseFloat(handleA.style.left)/100*rect.width;
+  const bx = parseFloat(handleB.style.left)/100*rect.width;
+  const pxWidthDisplayed = Math.abs(bx-ax);
+  const scaleX = workW/rect.width;
+  const pxWidthWork = pxWidthDisplayed*scaleX;
   const wCm = parseFloat(calibW.value);
   const dCm = parseFloat(calibD.value);
-  const focal = pxWidth * dCm / wCm;
-  saveCalib(focal);
+  focalLengthPx = pxWidthWork*dCm/wCm;
   closeCalibUI();
-  render();
+  updateBadge();
+  drawPreview();
 });
-
-resetCalib.addEventListener('click', ()=>{
-  clearCalib();
-  render();
-});
+resetCalib.addEventListener('click', ()=>{ focalLengthPx=null; updateBadge(); drawPreview(); });
 
 function makeDraggable(handle){
-  let dragging = false;
+  let dragging=false;
   function toPct(clientX, clientY){
-    handle.style.left = (clientX/window.innerWidth*100)+'%';
-    handle.style.top = (clientY/window.innerHeight*100)+'%';
+    const rect = canvasWrap.getBoundingClientRect();
+    let x = (clientX-rect.left)/rect.width*100;
+    let y = (clientY-rect.top)/rect.height*100;
+    x = Math.max(2, Math.min(98,x)); y = Math.max(2, Math.min(98,y));
+    handle.style.left = x+'%'; handle.style.top = y+'%';
   }
-  handle.addEventListener('pointerdown', (e)=>{ dragging=true; handle.setPointerCapture(e.pointerId); });
-  handle.addEventListener('pointermove', (e)=>{ if(dragging) toPct(e.clientX, e.clientY); });
+  handle.addEventListener('pointerdown', e=>{ dragging=true; handle.setPointerCapture(e.pointerId); });
+  handle.addEventListener('pointermove', e=>{ if(dragging) toPct(e.clientX, e.clientY); });
   handle.addEventListener('pointerup', ()=>{ dragging=false; });
 }
-makeDraggable(handleA);
-makeDraggable(handleB);
+makeDraggable(handleA); makeDraggable(handleB);
 
-updateBadge();
+document.getElementById('toggleRings').addEventListener('click', (e)=>{
+  showRings = !showRings;
+  e.target.textContent = showRings ? 'Hide zone rings' : 'Show zone rings';
+  drawPreview();
+});
+
+function pxPerDegree0(focal){ return focal*(Math.PI/180); }
+
+const BANDS = [
+  {inner:0,  outer:1,    key:'fovea'},
+  {inner:1,  outer:2.5,  key:'para'},
+  {inner:2.5,outer:9,    key:'macula'},
+  {inner:9,  outer:15,   key:'peri'},
+  {inner:15, outer:20,   key:'comfort'},
+  {inner:20, outer:9999, key:'beyond'},
+];
+
+// Rendering-visibility gain — NOT a physiological constant, and separate
+// from E2/60cpd (do not touch those two based on this one). The raw
+// MTF-derived sigma below (ppd/(2*cutoff)) is technically consistent with
+// the cortical-magnification model, but even at native device-pixel
+// resolution it comes out to only a few pixels at most in the far
+// periphery — too subtle to read as "blur" on screen. This multiplies that
+// value up so the falloff is visually legible. Value chosen by comparing
+// renders of a real photo at a few candidates, not backed by a citation —
+// safe to retune by eye without touching the vision-science constants.
+const BLUR_VISIBILITY_GAIN = 4;
+
+function sigmaForBand(band, ppd){
+  const e = band.outer>1000 ? 30 : (band.inner+band.outer)/2;
+  const cutoff = cutoffCyclesPerDeg(e);
+  const sigma = BLUR_VISIBILITY_GAIN * ppd/(2*cutoff);
+  return Math.max(0, sigma);
+}
+
+function blurredCopy(sigmaPx){
+  const c = document.createElement('canvas');
+  c.width = workW; c.height = workH;
+  const cctx = c.getContext('2d');
+  cctx.filter = sigmaPx>0.05 ? `blur(${sigmaPx.toFixed(2)}px)` : 'none';
+  cctx.drawImage(srcCanvas,0,0);
+  return c;
+}
+
+document.getElementById('applyBtn').addEventListener('click', ()=>{
+  if(!srcCanvas || !fixation) return;
+  try{
+    const focal = currentFocal();
+    const ppd = pxPerDegree0(focal);
+
+    const output = document.createElement('canvas');
+    output.width = workW; output.height = workH;
+    const octx = output.getContext('2d');
+
+    for(let i=BANDS.length-1; i>=0; i--){
+      const band = BANDS[i];
+      const sigma = sigmaForBand(band, ppd);
+      const layer = blurredCopy(sigma); // one scratch canvas per band, not two
+      const rOuter = band.outer>1000 ? Math.hypot(workW,workH) : focal*Math.tan(toRad(band.outer));
+      const rInner = focal*Math.tan(toRad(band.inner));
+      const feather = Math.max(4, (rOuter-rInner)*0.35);
+
+      const lctx = layer.getContext('2d');
+      const grad = lctx.createRadialGradient(fixation.x,fixation.y, Math.max(0,rOuter-feather), fixation.x,fixation.y, rOuter);
+      grad.addColorStop(0,'rgba(255,255,255,1)');
+      grad.addColorStop(1,'rgba(255,255,255,0)');
+      lctx.globalCompositeOperation='destination-in';
+      lctx.fillStyle = grad;
+      lctx.fillRect(0,0,workW,workH);
+
+      octx.drawImage(layer,0,0);
+    }
+
+    ctx.clearRect(0,0,workW,workH);
+    ctx.drawImage(output,0,0);
+    drawFixationMarker();
+    if(showRings) drawRings();
+
+    window.__lastRender = output;
+  }catch(err){
+    alert('Render failed: '+err.message+'\n\nTry a smaller/lower-resolution photo, or reload and try again.');
+    drawPreview();
+  }
+});
+
+document.getElementById('saveImg').addEventListener('click', ()=>{
+  const src = window.__lastRender || canvas;
+  src.toBlob(blob=>{
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'foveated.png';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  }, 'image/png');
+});
+
+function buildLegend(){
+  let l='';
+  ZONES.forEach(z=> l += `<div><span class="sw" style="background:${REAL[z.key]}"></span>${z.label} ${z.angle}°</div>`);
+  l += `<div><span class="sw" style="background:#cccccc"></span>Comfort ${COMFORT_ANGLE}°</div>`;
+  document.getElementById('legend').innerHTML = l;
+}
+buildLegend();
 </script>
 </body>
 </html>
