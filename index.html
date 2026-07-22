@@ -74,7 +74,7 @@
         <label class="filebtn">Take photo<input type="file" id="fileCam" accept="image/*" capture="environment"></label>
         <label class="filebtn secondary">Choose from library<input type="file" id="fileLib" accept="image/*"></label>
       </div>
-      <span class="badge uncal" id="calibBadge">uncalibrated — approx. 68&deg; FOV assumed</span>
+      <span class="badge uncal" id="calibBadge">uncalibrated — assuming full frame = A2 landscape @ 2m</span>
     </div>
   </div>
 
@@ -96,14 +96,15 @@
     <div class="box">
       <div class="note" style="margin-top:0;">If the photo contains something of known width (an A4 sheet, a credit card), drag the two green markers onto its edges and tell the tool the real width and how far it was from the camera when the photo was taken.</div>
       <div class="preset2" id="calibPresets">
-        <button class="preset2 active" data-w="21">A4 short edge, 21 cm</button>
+        <button class="preset2 active" data-w="59.4">A2 long edge (horizontal), 59.4 cm</button>
+        <button class="preset2" data-w="21">A4 short edge, 21 cm</button>
         <button class="preset2" data-w="29.7">A4 long edge, 29.7 cm</button>
         <button class="preset2" data-w="8.56">Credit card, 8.56 cm</button>
       </div>
-      <div class="row"><label>Reference object width <span class="val" id="calibWVal">21.0 cm</span></label>
-        <input type="range" id="calibW" min="3" max="40" step="0.01" value="21"></div>
-      <div class="row"><label>Distance from camera to it <span class="val" id="calibDVal">50 cm</span></label>
-        <input type="range" id="calibD" min="10" max="300" step="1" value="50"></div>
+      <div class="row"><label>Reference object width <span class="val" id="calibWVal">59.4 cm</span></label>
+        <input type="range" id="calibW" min="3" max="100" step="0.01" value="59.4"></div>
+      <div class="row"><label>Distance from camera to it <span class="val" id="calibDVal">200 cm</span></label>
+        <input type="range" id="calibD" min="10" max="300" step="1" value="200"></div>
       <div class="btnrow">
         <button class="small primary wide" id="startCalib">Position markers on image</button>
       </div>
@@ -142,6 +143,15 @@ const ZONES = [
 const COMFORT_ANGLE = 40;
 const REAL = {fovea:'#e0525c', para:'#e8a23f', macula:'#3ec9a0', peri:'#5a8fe0'};
 const E2 = 2.3, FOVEAL_ACUITY = 60; // cycles/deg
+
+// Reasonable default when no per-photo calibration has been done: assume
+// the frame is filled edge-to-edge by a horizontal A2 sheet (59.4cm long
+// edge) viewed/photographed from 2m — a concrete, plausible real-world
+// scenario (viewing a print/painting) rather than an arbitrary guessed
+// camera FOV. Also used to pre-fill the manual calibration UI's default
+// preset/values below, so both stay consistent with each other.
+const DEFAULT_REF_WIDTH_CM = 59.4;
+const DEFAULT_REF_DIST_CM = 200;
 
 function toRad(d){return d*Math.PI/180;}
 function cutoffCyclesPerDeg(eDeg){ return FOVEAL_ACUITY/(1+eDeg/E2); }
@@ -224,7 +234,7 @@ async function loadImageFile(file){
 document.getElementById('fileCam').addEventListener('change', e=>{ if(e.target.files[0]) loadImageFile(e.target.files[0]); });
 document.getElementById('fileLib').addEventListener('change', e=>{ if(e.target.files[0]) loadImageFile(e.target.files[0]); });
 
-function defaultFocal(){ return (workW/2)/Math.tan(toRad(68)/2); }
+function defaultFocal(){ return workW*DEFAULT_REF_DIST_CM/DEFAULT_REF_WIDTH_CM; }
 function currentFocal(){ return focalLengthPx || defaultFocal(); }
 
 function updateBadge(){
@@ -233,7 +243,8 @@ function updateBadge(){
     calibBadge.textContent = `calibrated — ${fov.toFixed(0)}° horiz. FOV for this photo`;
     calibBadge.className='badge cal';
   } else {
-    calibBadge.textContent = 'uncalibrated — approx. 68° FOV assumed';
+    const fov = 2*Math.atan((workW/2)/defaultFocal())*180/Math.PI;
+    calibBadge.textContent = `uncalibrated — assuming full frame = A2 landscape @ 2m (${fov.toFixed(0)}°)`;
     calibBadge.className='badge uncal';
   }
 }
