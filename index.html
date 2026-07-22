@@ -400,16 +400,27 @@ const BANDS = [
 // periphery — too subtle to read as "blur" on screen. This multiplies that
 // value up so the falloff is visually legible. Not backed by a citation —
 // safe to retune by eye without touching the vision-science constants.
-// Confirmed on a real on-device photo (iPhone, workW~1376, beyond-sigma~25px).
-const BLUR_VISIBILITY_GAIN = 12;
+//
+// BLUR_GAIN_POWER shapes HOW that gain ramps up with eccentricity. The
+// "excess over fovea baseline" term (1/cutoff - 1/FOVEAL_ACUITY) is exactly
+// LINEAR in eccentricity — a property of this specific cortical-
+// magnification curve, not a bug — so a plain linear gain multiplier starts
+// ramping up blur immediately past the fixation point with no flat "this
+// whole zone is genuinely sharp" region: even eccentricities well inside
+// the labeled ~2° foveal zone picked up several px of visible blur, though
+// the exact center pixel was 0. Raising the excess term to a power > 1
+// concentrates most of the visible falloff into the far periphery while
+// keeping the near-fixation region much flatter, closer to how foveal
+// acuity is actually perceived. Both constants are rendering-visibility
+// choices, tuned empirically against real photos — not citations.
+const BLUR_VISIBILITY_GAIN = 160;
+const BLUR_GAIN_POWER = 2;
 
 function sigmaForBand(band, ppd){
   const e = band.outer>1000 ? 30 : (band.inner+band.outer)/2;
   const cutoff = cutoffCyclesPerDeg(e);
-  // Same reformulation as the WebGL shader: GAIN amplifies only the excess
-  // over the fovea's own baseline, so the fovea band stays sharp regardless
-  // of ppd (see GL_FRAG_SRC's comment for the full explanation).
-  const sigma = BLUR_VISIBILITY_GAIN * ppd * 0.5 * (1/cutoff - 1/FOVEAL_ACUITY);
+  const excess = 1/cutoff - 1/FOVEAL_ACUITY;
+  const sigma = BLUR_VISIBILITY_GAIN * ppd * 0.5 * Math.pow(Math.max(0,excess), BLUR_GAIN_POWER);
   return Math.max(0, sigma);
 }
 
@@ -472,6 +483,7 @@ uniform float uFocalPx;
 uniform float uE2;
 uniform float uFovealAcuity;
 uniform float uGain;
+uniform float uGainPower;
 uniform float uMaxLod;
 in vec2 vUv;
 out vec4 fragColor;
@@ -487,7 +499,13 @@ void main(){
   // softening, which grows with ppd just like everywhere else and stops
   // looking sharp once ppd is large (e.g. under a narrow assumed/calibrated
   // FOV). This keeps sigma exactly 0 at eDeg=0 regardless of ppd or GAIN.
-  float sigma = uGain * ppd * 0.5 * (1.0/cutoff - 1.0/uFovealAcuity);
+  // uGainPower reshapes the ramp: the excess term is exactly linear in
+  // eDeg, which without this made blur ramp up immediately past the exact
+  // fixation pixel with no flat "genuinely sharp" zone. Raising it to a
+  // power > 1 keeps the near-fixation region flatter/sharper while still
+  // falling off strongly further out (see JS-side comment for full context).
+  float excess = max(0.0, 1.0/cutoff - 1.0/uFovealAcuity);
+  float sigma = uGain * ppd * 0.5 * pow(excess, uGainPower);
   float lod = clamp(log2(max(sigma, 0.0001)), 0.0, uMaxLod);
   fragColor = textureLod(uImage, vUv, lod);
 }`;
@@ -535,7 +553,7 @@ function initGL(){
   const texture = gl.createTexture();
 
   const uniforms = {};
-  ['uImage','uFixationUV','uResolution','uFocalPx','uE2','uFovealAcuity','uGain','uMaxLod'].forEach(name=>{
+  ['uImage','uFixationUV','uResolution','uFocalPx','uE2','uFovealAcuity','uGain','uGainPower','uMaxLod'].forEach(name=>{
     uniforms[name] = gl.getUniformLocation(program, name);
   });
 
@@ -593,6 +611,7 @@ function renderWebGL(focal){
   gl.uniform1f(uniforms.uE2, E2);
   gl.uniform1f(uniforms.uFovealAcuity, FOVEAL_ACUITY);
   gl.uniform1f(uniforms.uGain, BLUR_VISIBILITY_GAIN);
+  gl.uniform1f(uniforms.uGainPower, BLUR_GAIN_POWER);
   gl.uniform1f(uniforms.uMaxLod, Math.floor(Math.log2(Math.max(workW,workH))));
 
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
