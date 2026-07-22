@@ -406,7 +406,10 @@ const BLUR_VISIBILITY_GAIN = 12;
 function sigmaForBand(band, ppd){
   const e = band.outer>1000 ? 30 : (band.inner+band.outer)/2;
   const cutoff = cutoffCyclesPerDeg(e);
-  const sigma = BLUR_VISIBILITY_GAIN * ppd/(2*cutoff);
+  // Same reformulation as the WebGL shader: GAIN amplifies only the excess
+  // over the fovea's own baseline, so the fovea band stays sharp regardless
+  // of ppd (see GL_FRAG_SRC's comment for the full explanation).
+  const sigma = BLUR_VISIBILITY_GAIN * ppd * 0.5 * (1/cutoff - 1/FOVEAL_ACUITY);
   return Math.max(0, sigma);
 }
 
@@ -478,7 +481,13 @@ void main(){
   float eDeg = degrees(atan(rPx / uFocalPx));
   float cutoff = uFovealAcuity / (1.0 + eDeg / uE2);
   float ppd = uFocalPx * (3.14159265 / 180.0);
-  float sigma = uGain * ppd / (2.0 * cutoff);
+  // GAIN amplifies only the eccentricity-DEPENDENT excess over the fovea's
+  // own baseline (1/cutoff - 1/uFovealAcuity), not the raw sigma directly —
+  // otherwise GAIN also amplifies the fovea's inherent (small, MTF-derived)
+  // softening, which grows with ppd just like everywhere else and stops
+  // looking sharp once ppd is large (e.g. under a narrow assumed/calibrated
+  // FOV). This keeps sigma exactly 0 at eDeg=0 regardless of ppd or GAIN.
+  float sigma = uGain * ppd * 0.5 * (1.0/cutoff - 1.0/uFovealAcuity);
   float lod = clamp(log2(max(sigma, 0.0001)), 0.0, uMaxLod);
   fragColor = textureLod(uImage, vUv, lod);
 }`;
