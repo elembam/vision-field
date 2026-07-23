@@ -116,8 +116,21 @@
     </div>
   </div>
 
+  <div class="section" id="scenePanel" style="display:none;">
+    <div class="sectionhead"><span class="idx">04</span><h2>Real-world viewing scenario</h2></div>
+    <div class="box">
+      <div class="note" style="margin-top:0;">By default the blur simulates looking at THIS PHOTO. If it's a photo of something meant to be viewed at a real size and distance (e.g. a painting in a gallery), enter that here to simulate the real scenario instead of the photo's own scale.</div>
+      <div class="row"><label>Real object width <span class="val" id="farWVal">59.4 cm</span></label>
+        <input type="range" id="farW" min="5" max="500" step="0.1" value="59.4"></div>
+      <div class="row"><label>Real object height <span class="val" id="farHVal">42.0 cm</span></label>
+        <input type="range" id="farH" min="5" max="400" step="0.1" value="42"></div>
+      <div class="row"><label>Real viewing distance <span class="val" id="farDVal">200 cm</span></label>
+        <input type="range" id="farD" min="10" max="1000" step="1" value="200"></div>
+    </div>
+  </div>
+
   <div class="section" id="renderSection" style="display:none;">
-    <div class="sectionhead"><span class="idx">04</span><h2>Render</h2></div>
+    <div class="sectionhead"><span class="idx">05</span><h2>Render</h2></div>
     <div class="box">
       <div class="btnrow">
         <button class="small primary wide" id="applyBtn">Apply foveation filter</button>
@@ -163,12 +176,19 @@ const placeholder = document.getElementById('placeholder');
 const tapNote = document.getElementById('tapNote');
 const calibSection = document.getElementById('calibSection');
 const renderSection = document.getElementById('renderSection');
+const scenePanel = document.getElementById('scenePanel');
 const calibBadge = document.getElementById('calibBadge');
 
 let srcCanvas = null;
 let workW=0, workH=0;
 let fixation = null;
 let focalLengthPx = null;
+// Shooting distance (cm from camera to subject at photo time) — previously
+// computed transiently just to solve for focalLengthPx, then discarded.
+// Needed persistently now: the far-plane reprojection (below) divides by it
+// again later, independent of when calibration happened.
+let shootingDistCm = null;
+function currentShootingDist(){ return shootingDistCm || DEFAULT_REF_DIST_CM; }
 let showRings = false;
 
 // Internal render/display buffer sizing: match the canvas's actual on-screen
@@ -223,6 +243,7 @@ async function loadImageFile(file){
   placeholder.style.display='none';
   tapNote.style.display='block';
   calibSection.style.display='block';
+  scenePanel.style.display='block';
   renderSection.style.display='block';
 
   fixation = {x:workW/2, y:workH/2};
@@ -236,6 +257,20 @@ document.getElementById('fileLib').addEventListener('change', e=>{ if(e.target.f
 
 function defaultFocal(){ return workW*DEFAULT_REF_DIST_CM/DEFAULT_REF_WIDTH_CM; }
 function currentFocal(){ return focalLengthPx || defaultFocal(); }
+
+// Reprojects the photo's own (camera-calibrated) eccentricity through a
+// real viewing scenario: "focalLengthPx = pxWidthOnScreen * dCm / wCm" and
+// "realOffsetCm = pxOffset * dCm/focalLengthPx" combine with
+// "farEccentricity = atan(realOffsetCm/farDistCm)" into a single derived
+// focal length — substituting it here reprojects eccentricity without any
+// other formula changing (same as tapping a photo taken from a different
+// distance). Note: like the existing eccentricity formula it composes
+// with, this treats the fixation point as the camera's own optical axis
+// rather than computing the true off-axis inter-ray angle — a pre-existing
+// approximation this doesn't add to, not a new one.
+function effectiveFocal(){
+  return currentFocal() * (currentFarDist() / currentShootingDist());
+}
 
 function updateBadge(){
   if(focalLengthPx){
@@ -271,7 +306,7 @@ function drawFixationMarker(){
 }
 
 function drawRings(){
-  const focal = currentFocal();
+  const focal = effectiveFocal();
   ctx.save();
   ctx.lineWidth = Math.max(1.5, workW/450);
   ZONES.forEach(z=>{
@@ -323,6 +358,23 @@ function updateCalibLabels(){
 }
 [calibW,calibD].forEach(el=>el.addEventListener('input', updateCalibLabels));
 
+// Far-plane scenario: the real object's actual size/viewing distance being
+// simulated. farW/farH aren't used by the blur math itself (only farD is,
+// via effectiveFocalPx below) — they're for the Scene Setup diagram only.
+const farW = document.getElementById('farW');
+const farH = document.getElementById('farH');
+const farD = document.getElementById('farD');
+const farWVal = document.getElementById('farWVal');
+const farHVal = document.getElementById('farHVal');
+const farDVal = document.getElementById('farDVal');
+function currentFarDist(){ return Math.max(1, parseFloat(farD.value) || DEFAULT_REF_DIST_CM); }
+function updateFarLabels(){
+  farWVal.textContent = parseFloat(farW.value).toFixed(1)+' cm';
+  farHVal.textContent = parseFloat(farH.value).toFixed(1)+' cm';
+  farDVal.textContent = parseFloat(farD.value).toFixed(0)+' cm';
+}
+[farW,farH,farD].forEach(el=>el.addEventListener('input', updateFarLabels));
+
 startCalib.addEventListener('click', ()=>{
   if(!srcCanvas) return;
   calibLayer.classList.add('active');
@@ -347,12 +399,13 @@ calibSave.addEventListener('click', ()=>{
   const wCm = parseFloat(calibW.value);
   const dCm = parseFloat(calibD.value);
   focalLengthPx = pxWidthWork*dCm/wCm;
+  shootingDistCm = dCm;
   closeCalibUI();
   updateBadge();
   window.__lastRender = null; // focal length changed — any prior blur render is stale
   drawPreview();
 });
-resetCalib.addEventListener('click', ()=>{ focalLengthPx=null; updateBadge(); window.__lastRender=null; drawPreview(); });
+resetCalib.addEventListener('click', ()=>{ focalLengthPx=null; shootingDistCm=null; updateBadge(); window.__lastRender=null; drawPreview(); });
 
 function makeDraggable(handle){
   let dragging=false;
@@ -621,7 +674,7 @@ function renderWebGL(focal){
 document.getElementById('applyBtn').addEventListener('click', ()=>{
   if(!srcCanvas || !fixation) return;
   try{
-    const focal = currentFocal();
+    const focal = effectiveFocal();
     const ppd = pxPerDegree0(focal);
 
     const output = document.createElement('canvas');
