@@ -127,6 +127,21 @@
       <div class="row"><label>Real viewing distance <span class="val" id="farDVal">200 cm</span></label>
         <input type="range" id="farD" min="10" max="1000" step="1" value="200"></div>
     </div>
+    <div class="box" style="margin-top:10px;">
+      <div class="note" style="margin-top:0;">Plan view &mdash; width, seen from above. Green: this photo's own frame, at the shooting distance. White: the real object, at the viewing distance above.</div>
+      <svg id="svgScenePlan" viewBox="0 0 900 220" style="width:100%;height:auto;display:block;"></svg>
+      <div class="legend" id="legendScenePlan"></div>
+    </div>
+    <div class="box" style="margin-top:10px;">
+      <div class="note" style="margin-top:0;">Elevation view &mdash; height, seen from the side.</div>
+      <svg id="svgSceneElev" viewBox="0 0 900 220" style="width:100%;height:auto;display:block;"></svg>
+      <div class="legend" id="legendSceneElev"></div>
+    </div>
+    <div class="box" style="margin-top:10px;">
+      <div class="note" style="margin-top:0;">Face-on &mdash; acuity zones on the real object, at your current fixation point (tap the photo above to move it).</div>
+      <svg id="svgSceneFace" viewBox="0 0 320 320" style="width:100%;max-width:320px;height:auto;display:block;margin:0 auto;"></svg>
+      <div class="legend" id="legendSceneFace"></div>
+    </div>
   </div>
 
   <div class="section" id="renderSection" style="display:none;">
@@ -290,6 +305,7 @@ function drawPreview(){
   ctx.drawImage(srcCanvas,0,0);
   drawFixationMarker();
   if(showRings) drawRings();
+  renderSceneSetup();
 }
 
 function drawFixationMarker(){
@@ -373,7 +389,126 @@ function updateFarLabels(){
   farHVal.textContent = parseFloat(farH.value).toFixed(1)+' cm';
   farDVal.textContent = parseFloat(farD.value).toFixed(0)+' cm';
 }
-[farW,farH,farD].forEach(el=>el.addEventListener('input', updateFarLabels));
+[farW,farH,farD].forEach(el=>{ el.addEventListener('input', ()=>{ updateFarLabels(); renderSceneSetup(); }); });
+
+// ---- Scene Setup diagrams ----
+// Adapted from a separate sightline-diagram tool (visual-field-overlay
+// Projector.html) that compared a "near" plane to a "far" plane. Reused
+// here with the SAME ZONES/COMFORT_ANGLE/toRad/REAL already defined above
+// (not duplicated) and remapped to this tool's own near/far meaning:
+// near = the photo's own frame, at its calibrated (or default) shooting
+// distance; far = the real object, at the viewing distance being
+// simulated. These diagrams are a live reflection of the actual render
+// state (fixation, calibration, far-plane inputs) — not a disconnected
+// example — so they're re-rendered from the same triggers drawPreview()
+// already responds to, plus the far-plane sliders themselves.
+// A color distinct from all four REAL zone colors (and from white, used
+// for "real object") — avoids clashing with the macula zone-ray color
+// shown in the same diagram.
+const NEAR_COLOR = '#b48ee0';
+function renderScenePanel(svgEl, legendEl, nearHalf, farHalfActual, nearDistCm, farDistCm){
+  const projectedHalf = nearHalf * (farDistCm/nearDistCm);
+  const worldMaxDist = farDistCm*1.15;
+  const worldHalf = Math.max(nearHalf, farHalfActual, projectedHalf, 5) * 1.3;
+
+  const VBW=900, VBH=220;
+  const mL=60, mR=20, mT=16, mB=26;
+  const availW=VBW-mL-mR, availH=VBH-mT-mB;
+  const scalePx = Math.min(availW/worldMaxDist, (availH/2)/worldHalf);
+  const cy = VBH/2, apexX = mL;
+  const X = distCm => apexX + distCm*scalePx;
+  const Y = halfCm => cy - halfCm*scalePx;
+
+  let m = `<line x1="${apexX}" y1="${cy}" x2="${X(worldMaxDist)}" y2="${cy}" stroke="#556069" stroke-width="1" stroke-dasharray="2 4"/>`;
+
+  ZONES.forEach(z=>{
+    const half = Math.tan(toRad(z.angle)/2);
+    const slope = (cy-Y(half*farDistCm))/farDistCm;
+    m += `<line x1="${apexX}" y1="${cy}" x2="${X(worldMaxDist)}" y2="${cy-slope*worldMaxDist}" stroke="${REAL[z.key]}" stroke-width="1.3" opacity="0.8"/>`;
+    m += `<line x1="${apexX}" y1="${cy}" x2="${X(worldMaxDist)}" y2="${cy+slope*worldMaxDist}" stroke="${REAL[z.key]}" stroke-width="1.3" opacity="0.8"/>`;
+  });
+
+  const nx = X(nearDistCm), fx = X(farDistCm);
+  m += `<line x1="${nx}" y1="${mT}" x2="${nx}" y2="${VBH-mB}" stroke="${NEAR_COLOR}" stroke-width="1" stroke-dasharray="5 4" opacity="0.5"/>`;
+  m += `<line x1="${fx}" y1="${mT}" x2="${fx}" y2="${VBH-mB}" stroke="#f2f2f2" stroke-width="1" stroke-dasharray="5 4" opacity="0.5"/>`;
+
+  const fy = Y(projectedHalf), fyNeg = Y(-projectedHalf);
+  m += `<line x1="${apexX}" y1="${cy}" x2="${fx}" y2="${fy}" stroke="${NEAR_COLOR}" stroke-width="2"/>`;
+  m += `<line x1="${apexX}" y1="${cy}" x2="${fx}" y2="${fyNeg}" stroke="${NEAR_COLOR}" stroke-width="2"/>`;
+
+  const ny = Y(nearHalf), nyNeg = Y(-nearHalf);
+  m += `<line x1="${nx-5}" y1="${ny}" x2="${nx+5}" y2="${ny}" stroke="${NEAR_COLOR}" stroke-width="2"/>`;
+  m += `<line x1="${nx-5}" y1="${nyNeg}" x2="${nx+5}" y2="${nyNeg}" stroke="${NEAR_COLOR}" stroke-width="2"/>`;
+  m += `<text x="${nx+7}" y="${ny-4}" font-family="IBM Plex Mono" font-size="10" fill="${NEAR_COLOR}">${(nearHalf*2).toFixed(0)}cm photo</text>`;
+
+  m += `<circle cx="${fx}" cy="${fy}" r="3.5" fill="#0c1116" stroke="${NEAR_COLOR}" stroke-width="2"/>`;
+  m += `<circle cx="${fx}" cy="${fyNeg}" r="3.5" fill="#0c1116" stroke="${NEAR_COLOR}" stroke-width="2"/>`;
+
+  const fay = Y(farHalfActual), fayNeg = Y(-farHalfActual);
+  m += `<line x1="${fx-5}" y1="${fay}" x2="${fx+5}" y2="${fay}" stroke="#f2f2f2" stroke-width="2.5"/>`;
+  m += `<line x1="${fx-5}" y1="${fayNeg}" x2="${fx+5}" y2="${fayNeg}" stroke="#f2f2f2" stroke-width="2.5"/>`;
+  m += `<text x="${fx+7}" y="${fay-4}" font-family="IBM Plex Mono" font-size="10" fill="#f2f2f2">${(farHalfActual*2).toFixed(0)}cm real</text>`;
+
+  m += `<circle cx="${apexX}" cy="${cy}" r="3.5" fill="#f2f2f2"/>`;
+  m += `<text x="${apexX}" y="${cy+16}" text-anchor="middle" font-family="IBM Plex Mono" font-size="10" fill="#8b979c">eye</text>`;
+  m += `<text x="${nx}" y="${VBH-mB+14}" text-anchor="middle" font-family="IBM Plex Mono" font-size="10" fill="${NEAR_COLOR}">${(nearDistCm/100).toFixed(2)}m</text>`;
+  m += `<text x="${fx}" y="${VBH-mB+14}" text-anchor="middle" font-family="IBM Plex Mono" font-size="10" fill="#f2f2f2">${(farDistCm/100).toFixed(2)}m</text>`;
+
+  svgEl.innerHTML = m;
+
+  let leg = `<div><span class="sw" style="background:${NEAR_COLOR}"></span>Photo's own frame</div>`;
+  leg += `<div><span class="sw" style="background:#f2f2f2"></span>Real object</div>`;
+  ZONES.forEach(z=> leg += `<div><span class="sw" style="background:${REAL[z.key]}"></span>${z.label} ${z.angle}°</div>`);
+  legendEl.innerHTML = leg;
+}
+
+function renderSceneFace(svgEl, legendEl, wCm, hCm, distCm, fixXpct, fixYpct){
+  const VBW=320, VBH=320, mX=30, mY=30;
+  const scale = Math.min((VBW-2*mX)/wCm, (VBH-2*mY)/hCm);
+  const offX = (VBW - wCm*scale)/2, offY = (VBH - hCm*scale)/2;
+  const px = x => offX + x*scale, py = y => offY + y*scale;
+  const fx = px(wCm*fixXpct/100), fy = py(hCm*fixYpct/100);
+
+  let m = `<rect x="${px(0)}" y="${offY}" width="${wCm*scale}" height="${hCm*scale}" fill="#151b20" stroke="#f2f2f2" stroke-width="2"/>`;
+  m += `<clipPath id="sceneFaceClip"><rect x="${px(0)}" y="${offY}" width="${wCm*scale}" height="${hCm*scale}"/></clipPath>`;
+
+  [...ZONES].reverse().forEach(z=>{
+    const r = Math.tan(toRad(z.angle)/2)*distCm*scale;
+    m += `<circle cx="${fx}" cy="${fy}" r="${r}" fill="none" stroke="${REAL[z.key]}" stroke-width="2" clip-path="url(#sceneFaceClip)"/>`;
+  });
+  const rc = Math.tan(toRad(COMFORT_ANGLE)/2)*distCm*scale;
+  m += `<circle cx="${fx}" cy="${fy}" r="${rc}" fill="none" stroke="#8b979c" stroke-width="1.5" stroke-dasharray="6 5" clip-path="url(#sceneFaceClip)"/>`;
+
+  m += `<circle cx="${fx}" cy="${fy}" r="3.5" fill="#f2f2f2"/>`;
+  m += `<line x1="${fx-8}" y1="${fy}" x2="${fx+8}" y2="${fy}" stroke="#f2f2f2" stroke-width="1.2"/>`;
+  m += `<line x1="${fx}" y1="${fy-8}" x2="${fx}" y2="${fy+8}" stroke="#f2f2f2" stroke-width="1.2"/>`;
+  m += `<text x="${px(wCm/2)}" y="${offY-10}" text-anchor="middle" font-family="IBM Plex Mono" font-size="10" fill="#8b979c">${wCm.toFixed(0)}×${hCm.toFixed(0)}cm @ ${(distCm/100).toFixed(2)}m</text>`;
+
+  svgEl.innerHTML = m;
+
+  let leg = '';
+  ZONES.forEach(z=> leg += `<div><span class="sw" style="background:${REAL[z.key]}"></span>${z.label} ${z.angle}°</div>`);
+  leg += `<div><span class="sw" style="background:#8b979c"></span>Comfort ${COMFORT_ANGLE}°</div>`;
+  legendEl.innerHTML = leg;
+}
+
+function renderSceneSetup(){
+  if(!srcCanvas) return;
+  const shootDist = currentShootingDist();
+  const focal = currentFocal(); // camera's own calibrated/default focal — "near" is the photo's own frame at its own distance, not the far-plane reprojection
+  const nearWCm = workW * shootDist/focal;
+  const nearHCm = workH * shootDist/focal;
+  const farWCm = Math.max(0.1, parseFloat(farW.value) || DEFAULT_REF_WIDTH_CM);
+  const farHCm = Math.max(0.1, parseFloat(farH.value) || 1);
+  const farDCm = currentFarDist();
+
+  renderScenePanel(document.getElementById('svgScenePlan'), document.getElementById('legendScenePlan'), nearWCm/2, farWCm/2, shootDist, farDCm);
+  renderScenePanel(document.getElementById('svgSceneElev'), document.getElementById('legendSceneElev'), nearHCm/2, farHCm/2, shootDist, farDCm);
+
+  const fixXpct = fixation ? (fixation.x/workW*100) : 50;
+  const fixYpct = fixation ? (fixation.y/workH*100) : 50;
+  renderSceneFace(document.getElementById('svgSceneFace'), document.getElementById('legendSceneFace'), farWCm, farHCm, farDCm, fixXpct, fixYpct);
+}
 
 startCalib.addEventListener('click', ()=>{
   if(!srcCanvas) return;
