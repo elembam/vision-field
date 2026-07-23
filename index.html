@@ -155,6 +155,7 @@
         <button class="small wide" id="saveImg">Save / share result</button>
       </div>
       <div class="legend" id="legend"></div>
+      <div class="note" id="debugInfo" style="font-family:'IBM Plex Mono',monospace;white-space:pre-wrap;"></div>
       <div class="note">Blur strength per band follows the standard cortical-magnification model (acuity &asymp; acuity&#8320; / (1 + eccentricity/E2), E2 &asymp; 2.3&deg;) &mdash; the same falloff used in foveated-rendering research, applied here as discrete bands rather than a continuous gradient.</div>
     </div>
   </div>
@@ -821,6 +822,13 @@ document.getElementById('applyBtn').addEventListener('click', ()=>{
   try{
     const focal = effectiveFocal();
     const ppd = pxPerDegree0(focal);
+
+    document.getElementById('debugInfo').textContent =
+      `debug — workW:${workW} workH:${workH} fixation:(${fixation.x.toFixed(0)},${fixation.y.toFixed(0)})\n`+
+      `focalLengthPx:${focalLengthPx} shootingDistCm:${shootingDistCm}\n`+
+      `farD:${farD.value} farW:${farW.value} farH:${farH.value}\n`+
+      `currentFocal:${currentFocal().toFixed(2)} currentShootingDist:${currentShootingDist()} currentFarDist:${currentFarDist()}\n`+
+      `effectiveFocal:${focal.toFixed(2)} glUnavailable:${glUnavailable} dpr:${window.devicePixelRatio}`;
 
     const output = document.createElement('canvas');
     output.width = workW; output.height = workH;
