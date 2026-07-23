@@ -606,8 +606,11 @@ const BLUR_GAIN_POWER = 2;
 
 function sigmaForBand(band, ppd){
   const e = band.outer>1000 ? 30 : (band.inner+band.outer)/2;
-  const cutoff = cutoffCyclesPerDeg(e);
-  const excess = 1/cutoff - 1/FOVEAL_ACUITY;
+  // Same numerically-stable form as the WebGL shader: mathematically
+  // identical to "1/cutoffCyclesPerDeg(e) - 1/FOVEAL_ACUITY", but without
+  // subtracting two nearly-equal numbers near e=0. Not a real bug in JS
+  // (64-bit doubles), but kept identical to the shader on purpose.
+  const excess = e / (FOVEAL_ACUITY * E2);
   const sigma = BLUR_VISIBILITY_GAIN * ppd * 0.5 * Math.pow(Math.max(0,excess), BLUR_GAIN_POWER);
   return Math.max(0, sigma);
 }
@@ -679,20 +682,27 @@ void main(){
   vec2 pxOffset = (vUv - uFixationUV) * uResolution;
   float rPx = length(pxOffset);
   float eDeg = degrees(atan(rPx / uFocalPx));
-  float cutoff = uFovealAcuity / (1.0 + eDeg / uE2);
   float ppd = uFocalPx * (3.14159265 / 180.0);
   // GAIN amplifies only the eccentricity-DEPENDENT excess over the fovea's
-  // own baseline (1/cutoff - 1/uFovealAcuity), not the raw sigma directly —
-  // otherwise GAIN also amplifies the fovea's inherent (small, MTF-derived)
-  // softening, which grows with ppd just like everywhere else and stops
-  // looking sharp once ppd is large (e.g. under a narrow assumed/calibrated
-  // FOV). This keeps sigma exactly 0 at eDeg=0 regardless of ppd or GAIN.
-  // uGainPower reshapes the ramp: the excess term is exactly linear in
-  // eDeg, which without this made blur ramp up immediately past the exact
-  // fixation pixel with no flat "genuinely sharp" zone. Raising it to a
-  // power > 1 keeps the near-fixation region flatter/sharper while still
-  // falling off strongly further out (see JS-side comment for full context).
-  float excess = max(0.0, 1.0/cutoff - 1.0/uFovealAcuity);
+  // own baseline, not the raw sigma directly — otherwise GAIN also
+  // amplifies the fovea's inherent (small, MTF-derived) softening, which
+  // grows with ppd just like everywhere else and stops looking sharp once
+  // ppd is large (e.g. under a narrow assumed/calibrated FOV). This keeps
+  // sigma exactly 0 at eDeg=0 regardless of ppd or GAIN.
+  //
+  // The excess term is mathematically "1/cutoff - 1/uFovealAcuity" where
+  // cutoff = uFovealAcuity/(1+eDeg/uE2) — but computed that way, it
+  // subtracts two nearly-equal numbers right where eDeg is small (near
+  // the fixation point), which is exactly where this needs to be most
+  // accurate. In a highp-requesting fragment shader that a GPU/driver
+  // silently runs at reduced precision (allowed by the WebGL spec, and
+  // common on some integrated GPUs), that cancellation error can exceed
+  // the true value there, producing spurious blur right at the fixation
+  // point — reported as "the fovea is blurred instead of the periphery."
+  // This algebraically simplifies to the exact same value with no
+  // subtraction of near-equal numbers at all (1/cutoff is exactly linear
+  // in eDeg for this curve, so "1/cutoff - 1/FA" reduces to this directly):
+  float excess = eDeg / (uFovealAcuity * uE2);
   float sigma = uGain * ppd * 0.5 * pow(excess, uGainPower);
   float lod = clamp(log2(max(sigma, 0.0001)), 0.0, uMaxLod);
   fragColor = textureLod(uImage, vUv, lod);
