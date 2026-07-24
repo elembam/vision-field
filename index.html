@@ -147,6 +147,11 @@
   <div class="section" id="renderSection" style="display:none;">
     <div class="sectionhead"><span class="idx">05</span><h2>Render</h2></div>
     <div class="box">
+      <div class="note" style="margin-top:0;">Blur models acuity loss as frequency-domain softening (what's lost after processing). Point cloud instead models it as reduced sampling density &mdash; how many "receptors" capture the image at each eccentricity, echoing real photoreceptor density falloff.</div>
+      <div class="preset2" id="renderModePresets">
+        <button class="preset2 active" data-mode="blur">Blur</button>
+        <button class="preset2" data-mode="points">Point Cloud</button>
+      </div>
       <div class="btnrow">
         <button class="small primary wide" id="applyBtn">Apply foveation filter</button>
         <button class="small wide" id="toggleRings">Show zone rings</button>
@@ -206,6 +211,7 @@ let focalLengthPx = null;
 let shootingDistCm = null;
 function currentShootingDist(){ return shootingDistCm || DEFAULT_REF_DIST_CM; }
 let showRings = false;
+let renderMode = 'blur'; // 'blur' | 'points'
 
 // Internal render/display buffer sizing: match the canvas's actual on-screen
 // pixel density (CSS width x devicePixelRatio) instead of a fixed constant.
@@ -558,6 +564,15 @@ function makeDraggable(handle){
 }
 makeDraggable(handleA); makeDraggable(handleB);
 
+const renderModePresets = document.getElementById('renderModePresets');
+renderModePresets.querySelectorAll('button').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    renderModePresets.querySelectorAll('button').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    renderMode = btn.dataset.mode;
+  });
+});
+
 document.getElementById('toggleRings').addEventListener('click', (e)=>{
   showRings = !showRings;
   e.target.textContent = showRings ? 'Hide zone rings' : 'Show zone rings';
@@ -604,6 +619,148 @@ const BANDS = [
 // choices, tuned empirically against real photos — not citations.
 const BLUR_VISIBILITY_GAIN = 160;
 const BLUR_GAIN_POWER = 2;
+
+// ---- Point-cloud render mode: sampling-density model ----
+// Alternative to blur. Blur models acuity loss as frequency-domain
+// softening (what's lost after processing); this models it as reduced
+// SAMPLING DENSITY instead — how many "receptors" actually capture the
+// image at a given eccentricity, echoing real photoreceptor density
+// falloff (Curcio et al.) more directly than an MTF/blur analogy. Reuses
+// cutoffCyclesPerDeg(e)/ppd exactly as-is — only the mapping from
+// eccentricity to a render parameter changes (spacing instead of sigma).
+//
+// density(e) ~= POINT_DENSITY_GAIN * cutoff(e)^2 points/deg^2 (standard
+// 2D-Nyquist reasoning: resolving F cycles/deg on both axes needs ~(2F)^2
+// samples/deg^2). Spacing (points/length) relates to density (points/area)
+// by spacing ~= 1/sqrt(density), giving the pixel-space formula below via
+// the same ppd used everywhere else. Unlike the blur excess term, this is
+// a plain reciprocal — no near-equal-number subtraction, no precision risk.
+// POINT_DENSITY_GAIN and the two spacing clamps are rendering-visibility
+// choices, same convention as BLUR_VISIBILITY_GAIN — not physiological,
+// not citations, safe to retune by eye without touching E2/FOVEAL_ACUITY.
+//
+// Note: real Poisson-disk packing only achieves ~60-70% of the naive
+// 1/spacing^2 point count for a given minimum spacing — not a bug, the
+// empirical gain below already absorbs it (same as BLUR_VISIBILITY_GAIN
+// absorbs its own perceptual fudge factor). Don't "fix" this later by
+// inserting a hex-packing correction constant.
+const POINT_DENSITY_GAIN = 0.18;
+const MIN_POINT_SPACING_PX = 2;
+const MAX_POINT_SPACING_PX = 34; // ~17x MIN, bounds worst-case neighbor-scan cost during generation
+// Point generation happens in a separate, smaller coordinate space than
+// the working (blur) resolution — mirrors this file's existing MAX_WORK_W
+// pattern (iOS memory safety). Bounds worst-case candidate count/runtime
+// regardless of source photo resolution; color is still sampled from the
+// full-resolution srcCanvas afterward, so this only bounds placement cost.
+const POINT_GEN_MAX_W = 900;
+const POINT_COUNT_CEILING = 80000; // hard ceiling, independent of the resolution cap above
+
+function minSpacingPx(eDeg, ppd){
+  const cutoff = cutoffCyclesPerDeg(eDeg);
+  const spacing = ppd / (Math.sqrt(POINT_DENSITY_GAIN) * cutoff);
+  return Math.min(MAX_POINT_SPACING_PX, Math.max(MIN_POINT_SPACING_PX, spacing));
+}
+
+// Variable-density Poisson-disk sampling (Bridson, "Fast Poisson Disk
+// Sampling in Arbitrary Dimensions", 2007), adapted for a spatially-
+// varying minimum spacing via a density function instead of a constant
+// radius — the same adaptation used by e.g. the well-known
+// "poisson-disk-sampling" npm package's distanceFunction support, not
+// invented here. Background grid sized to the smallest possible spacing
+// for ~O(1) neighbor lookups; candidates generated in an annulus around
+// each active point using ITS spacing, but accept/reject checks
+// re-evaluate the density function at the CANDIDATE's own coordinates
+// (not reusing the parent's value for both steps — that would silently
+// bias the transition band). Accept requires clearing
+// max(spacing(candidate), spacing(neighbor)) from every nearby existing
+// point — max(), not average/sum, since this is already a full center-to-
+// center spacing value, not a disk radius meant to be summed on contact.
+function generatePoissonDiskPoints(width, height, cx, cy, focal, k){
+  const ppd = pxPerDegree0(focal);
+  const cellSize = MIN_POINT_SPACING_PX / Math.SQRT2;
+  const gridW = Math.ceil(width/cellSize), gridH = Math.ceil(height/cellSize);
+  const grid = new Int32Array(gridW*gridH).fill(-1);
+  const points = []; // {x,y,spacing}
+  const active = [];
+
+  function gridIndex(x,y){
+    return Math.floor(y/cellSize)*gridW + Math.floor(x/cellSize);
+  }
+  function spacingAt(x,y){
+    const eDeg = Math.atan(Math.hypot(x-cx, y-cy)/focal)*180/Math.PI;
+    return minSpacingPx(eDeg, ppd);
+  }
+  function farEnoughFromExisting(x, y, spacing){
+    if(x<0||y<0||x>=width||y>=height) return false;
+    const gx = Math.floor(x/cellSize), gy = Math.floor(y/cellSize);
+    // Search radius scales with THIS candidate's own local spacing, not the
+    // global MAX_POINT_SPACING_PX — density varies smoothly with
+    // eccentricity, so a real conflicting neighbor's own spacing is
+    // comparable to the candidate's, not off by the full min/max ratio.
+    // Using the global max here made every single candidate scan a ~51x51
+    // cell window regardless of local density, which is what actually made
+    // this hang rather than just run a bit slow (confirmed by profiling).
+    const searchR = Math.ceil((2*spacing)/cellSize);
+    for(let j=Math.max(0,gy-searchR); j<=Math.min(gridH-1,gy+searchR); j++){
+      for(let i=Math.max(0,gx-searchR); i<=Math.min(gridW-1,gx+searchR); i++){
+        const idx = grid[j*gridW+i];
+        if(idx<0) continue;
+        const p = points[idx];
+        const need = Math.max(spacing, p.spacing);
+        if(Math.hypot(x-p.x, y-p.y) < need) return false;
+      }
+    }
+    return true;
+  }
+  function addPoint(x,y,spacing){
+    const idx = points.length;
+    points.push({x,y,spacing});
+    grid[gridIndex(x,y)] = idx;
+    active.push(idx);
+  }
+
+  const startX = cx>=0&&cx<width ? cx : width/2;
+  const startY = cy>=0&&cy<height ? cy : height/2;
+  addPoint(startX, startY, spacingAt(startX,startY));
+
+  // Wall-clock ceiling, independent of POINT_COUNT_CEILING: cheap insurance
+  // against any future gain/clamp retuning mistake stalling generation —
+  // this is a novel algorithm on a wide range of possible inputs, and this
+  // app has already hit one real unbounded-resource crash before.
+  const t0 = performance.now();
+  const TIME_CEILING_MS = 4000;
+  while(active.length){
+    if(points.length >= POINT_COUNT_CEILING) break;
+    if((points.length & 1023)===0 && performance.now()-t0 > TIME_CEILING_MS) break;
+    // Pick a random POSITION (not just a value) so a failed point can be
+    // removed in O(1) via swap-with-last-then-pop, rather than searching
+    // for it with indexOf+splice — O(n) removal repeated up to n times
+    // is O(n^2) overall, which is what actually made the first version
+    // of this loop hang rather than just run a bit slow.
+    const activePos = Math.floor(Math.random()*active.length);
+    const activeIdx = active[activePos];
+    const p = points[activeIdx];
+    let found = false;
+    for(let attempt=0; attempt<k; attempt++){
+      const angle = Math.random()*Math.PI*2;
+      const dist = p.spacing*(1+Math.random()); // [r, 2r)
+      const x = p.x + Math.cos(angle)*dist;
+      const y = p.y + Math.sin(angle)*dist;
+      const spacing = spacingAt(x,y);
+      if(farEnoughFromExisting(x,y,spacing)){
+        addPoint(x,y,spacing);
+        found = true;
+        if(points.length >= POINT_COUNT_CEILING) break;
+      }
+    }
+    if(!found){
+      const last = active.length-1;
+      active[activePos] = active[last];
+      active.pop();
+    }
+  }
+  return points;
+}
 
 function sigmaForBand(band, ppd){
   const e = band.outer>1000 ? 30 : (band.inner+band.outer)/2;
@@ -817,6 +974,29 @@ function renderWebGL(focal){
   return glCanvas;
 }
 
+// Stage 1: positions only, no color sampling yet (added next stage) — lets
+// the density falloff shape be sanity-checked before layering coloring on.
+function renderPointCloud(focal, octx){
+  const internalScale = workW>POINT_GEN_MAX_W ? POINT_GEN_MAX_W/workW : 1;
+  const genW = Math.round(workW*internalScale), genH = Math.round(workH*internalScale);
+  const genFocal = focal*internalScale;
+  const genCx = fixation.x*internalScale, genCy = fixation.y*internalScale;
+
+  const points = generatePoissonDiskPoints(genW, genH, genCx, genCy, genFocal, 50);
+
+  octx.fillStyle = '#f2ede2';
+  octx.fillRect(0,0,workW,workH);
+  octx.fillStyle = '#0c1116';
+  const invScale = 1/internalScale;
+  points.forEach(p=>{
+    const x = p.x*invScale, y = p.y*invScale, r = Math.max(0.6, p.spacing*invScale*0.18);
+    octx.beginPath();
+    octx.arc(x, y, r, 0, 7);
+    octx.fill();
+  });
+  return points.length;
+}
+
 document.getElementById('applyBtn').addEventListener('click', ()=>{
   if(!srcCanvas || !fixation) return;
   try{
@@ -834,11 +1014,15 @@ document.getElementById('applyBtn').addEventListener('click', ()=>{
     output.width = workW; output.height = workH;
     const octx = output.getContext('2d');
 
-    const glResult = renderWebGL(focal);
-    if(glResult){
-      octx.drawImage(glResult, 0, 0);
+    if(renderMode==='points'){
+      renderPointCloud(focal, octx);
     } else {
-      renderCanvas2DFallback(focal, ppd, octx);
+      const glResult = renderWebGL(focal);
+      if(glResult){
+        octx.drawImage(glResult, 0, 0);
+      } else {
+        renderCanvas2DFallback(focal, ppd, octx);
+      }
     }
 
     ctx.clearRect(0,0,workW,workH);
