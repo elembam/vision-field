@@ -106,7 +106,7 @@
         <div class="handle" id="handleB" style="left:65%;top:50%;"></div>
       </div>
     </div>
-    <div class="note" id="tapNote" style="display:none;">Tap anywhere on the image to add a fixation point (up to 6). Tap an existing marker to remove it.</div>
+    <div class="note" id="tapNote" style="display:none;">Tap anywhere on the image to add a fixation point (up to 6). Drag an existing marker to move it; tap it without dragging to remove it.</div>
     <div class="btnrow" id="clearFixationsRow" style="display:none;margin-top:8px;">
       <button class="small danger wide" id="clearFixations">Clear all fixation points</button>
     </div>
@@ -394,24 +394,68 @@ function drawRings(){
   ctx.restore();
 }
 
+function eventToWorkXY(e){
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = workW/rect.width, scaleY = workH/rect.height;
+  return { x: (e.clientX-rect.left)*scaleX, y: (e.clientY-rect.top)*scaleY };
+}
+
+// Drag an existing marker to reposition it; tap it WITHOUT dragging to
+// remove it (never below 1 remaining) — a tap and the start of a drag look
+// identical on pointerdown, so the down/move/up split below is what tells
+// them apart, same setPointerCapture pattern the calibration handles use
+// elsewhere in this file. Without this, the sole default fixation placed
+// on image load had no way to be relocated: tapping it did nothing (can't
+// remove the last one) and tapping elsewhere just added a SECOND point
+// instead of moving the first — reads as "the first point is locked."
+let draggingFixationIdx = null;
+let dragDownClient = null;
+let dragMoved = false;
+const DRAG_THRESHOLD_PX = 4; // CSS px; below this, a pointerdown+up is a tap, not a drag
+
 canvasWrap.addEventListener('pointerdown', (e)=>{
   if(document.getElementById('calibLayer').classList.contains('active')) return;
   if(!srcCanvas) return;
-  const rect = canvas.getBoundingClientRect();
-  const scaleX = workW/rect.width, scaleY = workH/rect.height;
-  const x = (e.clientX-rect.left)*scaleX, y = (e.clientY-rect.top)*scaleY;
+  const {x,y} = eventToWorkXY(e);
 
-  // Tap an existing marker to remove it (never below 1 remaining); tap
-  // elsewhere to add a new point (up to MAX_FIXATIONS; a no-op past the cap).
   const hitRadius = Math.max(10, workW/60); // matches the marker's own drawn size
   const hitIdx = fixations.findIndex(f => Math.hypot(f.x-x, f.y-y) <= hitRadius);
   if(hitIdx >= 0){
-    if(fixations.length>1) fixations.splice(hitIdx,1);
+    draggingFixationIdx = hitIdx;
+    dragDownClient = {x: e.clientX, y: e.clientY};
+    dragMoved = false;
+    canvasWrap.setPointerCapture(e.pointerId);
   } else if(fixations.length<MAX_FIXATIONS){
     fixations.push({x,y});
+    window.__lastRender = null; // fixation set changed — any prior render is stale
+    drawPreview();
   }
-  window.__lastRender = null; // fixation set changed — any prior render is stale
+});
+
+canvasWrap.addEventListener('pointermove', (e)=>{
+  if(draggingFixationIdx===null) return;
+  if(!dragMoved && Math.hypot(e.clientX-dragDownClient.x, e.clientY-dragDownClient.y) > DRAG_THRESHOLD_PX){
+    dragMoved = true;
+  }
+  const {x,y} = eventToWorkXY(e);
+  fixations[draggingFixationIdx].x = Math.min(workW, Math.max(0, x));
+  fixations[draggingFixationIdx].y = Math.min(workH, Math.max(0, y));
+  window.__lastRender = null;
   drawPreview();
+});
+
+canvasWrap.addEventListener('pointerup', ()=>{
+  if(draggingFixationIdx===null) return;
+  if(!dragMoved && fixations.length>1){
+    fixations.splice(draggingFixationIdx,1);
+    window.__lastRender = null;
+    drawPreview();
+  }
+  draggingFixationIdx = null;
+});
+
+canvasWrap.addEventListener('pointercancel', ()=>{
+  draggingFixationIdx = null;
 });
 
 document.getElementById('clearFixations').addEventListener('click', ()=>{
