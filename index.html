@@ -74,6 +74,9 @@
         <label class="filebtn">Take photo<input type="file" id="fileCam" accept="image/*" capture="environment"></label>
         <label class="filebtn secondary">Choose from library<input type="file" id="fileLib" accept="image/*"></label>
       </div>
+      <div class="btnrow" style="margin-bottom:10px;">
+        <button class="small wide" id="loadSample">Try sample photo</button>
+      </div>
       <span class="badge uncal" id="calibBadge">uncalibrated — assuming full frame = A2 landscape @ 2m</span>
     </div>
   </div>
@@ -284,6 +287,15 @@ async function loadImageFile(file){
 }
 document.getElementById('fileCam').addEventListener('change', e=>{ if(e.target.files[0]) loadImageFile(e.target.files[0]); });
 document.getElementById('fileLib').addEventListener('change', e=>{ if(e.target.files[0]) loadImageFile(e.target.files[0]); });
+document.getElementById('loadSample').addEventListener('click', async ()=>{
+  try{
+    const resp = await fetch('sample.png');
+    const blob = await resp.blob();
+    loadImageFile(blob);
+  }catch(err){
+    alert('Could not load the sample photo: '+err.message);
+  }
+});
 
 function defaultFocal(){ return workW*DEFAULT_REF_DIST_CM/DEFAULT_REF_WIDTH_CM; }
 function currentFocal(){ return focalLengthPx || defaultFocal(); }
