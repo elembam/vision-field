@@ -67,24 +67,39 @@
     <div class="sub">a spatial low-pass filter that gets stronger with eccentricity — fovea sharp, periphery blurred, matching acuity falloff</div>
   </header>
 
-  <div class="section">
-    <div class="sectionhead"><span class="idx">01</span><h2>Load an image</h2></div>
+  <div class="section" id="renderSection" style="display:none;">
+    <div class="sectionhead"><span class="idx">01</span><h2>Render</h2></div>
     <div class="box">
-      <div class="filerow">
-        <label class="filebtn">Take photo<input type="file" id="fileCam" accept="image/*" capture="environment"></label>
-        <label class="filebtn secondary">Choose from library<input type="file" id="fileLib" accept="image/*"></label>
+      <div class="note" style="margin-top:0;">Blur models acuity loss as frequency-domain softening (what's lost after processing). Point cloud instead models it as reduced sampling density &mdash; how many "receptors" capture the image at each eccentricity, echoing real photoreceptor density falloff.</div>
+      <div class="preset2" id="renderModePresets">
+        <button class="preset2 active" data-mode="blur">Blur</button>
+        <button class="preset2" data-mode="points">Point Cloud</button>
       </div>
-      <div class="btnrow" style="margin-bottom:10px;">
-        <button class="small wide" id="loadSample">Try sample photo</button>
+      <div id="pointCloudControls" style="display:none;">
+        <div class="row"><label>Dot size ratio <span class="val" id="pointRadiusRatioVal">0.40</span></label>
+          <input type="range" id="pointRadiusRatio" min="0.1" max="0.8" step="0.01" value="0.4"></div>
+        <div class="preset2" id="pointBgPresets">
+          <button class="preset2 active" data-bg="paper">Paper background</button>
+          <button class="preset2" data-bg="blurred">Faint blurred base</button>
+        </div>
       </div>
-      <span class="badge uncal" id="calibBadge">uncalibrated — assuming full frame = A2 landscape @ 2m</span>
+      <div class="btnrow">
+        <button class="small primary wide" id="applyBtn">Apply foveation filter</button>
+        <button class="small wide" id="toggleRings">Show zone rings</button>
+      </div>
+      <div class="btnrow" style="margin-top:8px;">
+        <button class="small wide" id="saveImg">Save / share result</button>
+      </div>
+      <div class="legend" id="legend"></div>
+      <div class="note" id="debugInfo" style="font-family:'IBM Plex Mono',monospace;white-space:pre-wrap;"></div>
+      <div class="note">Blur strength per band follows the standard cortical-magnification model (acuity &asymp; acuity&#8320; / (1 + eccentricity/E2), E2 &asymp; 2.3&deg;) &mdash; the same falloff used in foveated-rendering research, applied here as discrete bands rather than a continuous gradient.</div>
     </div>
   </div>
 
   <div class="section">
     <div class="sectionhead"><span class="idx">02</span><h2>Fixation &amp; calibration</h2></div>
     <div id="canvasWrap">
-      <div id="placeholder">No image loaded yet.<br>Tap "Take photo" or "Choose from library" above.</div>
+      <div id="placeholder">No image loaded yet.<br>Tap "Take photo" or "Choose from library" below.</div>
       <canvas id="canvas" style="display:none;"></canvas>
       <div id="calibLayer">
         <div class="handle" id="handleA" style="left:35%;top:50%;"></div>
@@ -94,33 +109,8 @@
     <div class="note" id="tapNote" style="display:none;">Tap anywhere on the image to set the fixation point (the crosshair).</div>
   </div>
 
-  <div class="section" id="calibSection" style="display:none;">
-    <div class="sectionhead"><span class="idx">03</span><h2>Calibrate to a known object</h2></div>
-    <div class="box">
-      <div class="note" style="margin-top:0;">If the photo contains something of known width (an A4 sheet, a credit card), drag the two green markers onto its edges and tell the tool the real width and how far it was from the camera when the photo was taken.</div>
-      <div class="preset2" id="calibPresets">
-        <button class="preset2 active" data-w="59.4">A2 long edge (horizontal), 59.4 cm</button>
-        <button class="preset2" data-w="21">A4 short edge, 21 cm</button>
-        <button class="preset2" data-w="29.7">A4 long edge, 29.7 cm</button>
-        <button class="preset2" data-w="8.56">Credit card, 8.56 cm</button>
-      </div>
-      <div class="row"><label>Reference object width <span class="val" id="calibWVal">59.4 cm</span></label>
-        <input type="range" id="calibW" min="3" max="100" step="0.01" value="59.4"></div>
-      <div class="row"><label>Distance from camera to it <span class="val" id="calibDVal">200 cm</span></label>
-        <input type="range" id="calibD" min="10" max="300" step="1" value="200"></div>
-      <div class="btnrow">
-        <button class="small primary wide" id="startCalib">Position markers on image</button>
-      </div>
-      <div class="btnrow" id="calibConfirmRow" style="display:none;">
-        <button class="small primary wide" id="calibSave">Save calibration</button>
-        <button class="small wide" id="calibCancel">Cancel</button>
-      </div>
-      <button class="small danger" id="resetCalib" style="margin-top:8px;">Reset calibration</button>
-    </div>
-  </div>
-
   <div class="section" id="scenePanel" style="display:none;">
-    <div class="sectionhead"><span class="idx">04</span><h2>Real-world viewing scenario</h2></div>
+    <div class="sectionhead"><span class="idx">03</span><h2>Real-world viewing scenario</h2></div>
     <div class="box">
       <div class="note" style="margin-top:0;">By default the blur simulates looking at THIS PHOTO. If it's a photo of something meant to be viewed at a real size and distance (e.g. a painting in a gallery), enter that here to simulate the real scenario instead of the photo's own scale.</div>
       <div class="row"><label>Real object width <span class="val" id="farWVal">59.4 cm</span></label>
@@ -147,32 +137,42 @@
     </div>
   </div>
 
-  <div class="section" id="renderSection" style="display:none;">
-    <div class="sectionhead"><span class="idx">05</span><h2>Render</h2></div>
+  <div class="section" id="calibSection" style="display:none;">
+    <div class="sectionhead"><span class="idx">04</span><h2>Calibrate to a known object</h2></div>
     <div class="box">
-      <div class="note" style="margin-top:0;">Blur models acuity loss as frequency-domain softening (what's lost after processing). Point cloud instead models it as reduced sampling density &mdash; how many "receptors" capture the image at each eccentricity, echoing real photoreceptor density falloff.</div>
-      <div class="preset2" id="renderModePresets">
-        <button class="preset2 active" data-mode="blur">Blur</button>
-        <button class="preset2" data-mode="points">Point Cloud</button>
+      <div class="note" style="margin-top:0;">If the photo contains something of known width (an A4 sheet, a credit card), drag the two green markers onto its edges and tell the tool the real width and how far it was from the camera when the photo was taken.</div>
+      <div class="preset2" id="calibPresets">
+        <button class="preset2 active" data-w="59.4">A2 long edge (horizontal), 59.4 cm</button>
+        <button class="preset2" data-w="21">A4 short edge, 21 cm</button>
+        <button class="preset2" data-w="29.7">A4 long edge, 29.7 cm</button>
+        <button class="preset2" data-w="8.56">Credit card, 8.56 cm</button>
       </div>
-      <div id="pointCloudControls" style="display:none;">
-        <div class="row"><label>Dot size ratio <span class="val" id="pointRadiusRatioVal">0.40</span></label>
-          <input type="range" id="pointRadiusRatio" min="0.1" max="0.8" step="0.01" value="0.4"></div>
-        <div class="preset2" id="pointBgPresets">
-          <button class="preset2 active" data-bg="paper">Paper background</button>
-          <button class="preset2" data-bg="blurred">Faint blurred base</button>
-        </div>
-      </div>
+      <div class="row"><label>Reference object width <span class="val" id="calibWVal">59.4 cm</span></label>
+        <input type="range" id="calibW" min="3" max="100" step="0.01" value="59.4"></div>
+      <div class="row"><label>Distance from camera to it <span class="val" id="calibDVal">200 cm</span></label>
+        <input type="range" id="calibD" min="10" max="300" step="1" value="200"></div>
       <div class="btnrow">
-        <button class="small primary wide" id="applyBtn">Apply foveation filter</button>
-        <button class="small wide" id="toggleRings">Show zone rings</button>
+        <button class="small primary wide" id="startCalib">Position markers on image</button>
       </div>
-      <div class="btnrow" style="margin-top:8px;">
-        <button class="small wide" id="saveImg">Save / share result</button>
+      <div class="btnrow" id="calibConfirmRow" style="display:none;">
+        <button class="small primary wide" id="calibSave">Save calibration</button>
+        <button class="small wide" id="calibCancel">Cancel</button>
       </div>
-      <div class="legend" id="legend"></div>
-      <div class="note" id="debugInfo" style="font-family:'IBM Plex Mono',monospace;white-space:pre-wrap;"></div>
-      <div class="note">Blur strength per band follows the standard cortical-magnification model (acuity &asymp; acuity&#8320; / (1 + eccentricity/E2), E2 &asymp; 2.3&deg;) &mdash; the same falloff used in foveated-rendering research, applied here as discrete bands rather than a continuous gradient.</div>
+      <button class="small danger" id="resetCalib" style="margin-top:8px;">Reset calibration</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="sectionhead"><span class="idx">05</span><h2>Load an image</h2></div>
+    <div class="box">
+      <div class="filerow">
+        <label class="filebtn">Take photo<input type="file" id="fileCam" accept="image/*" capture="environment"></label>
+        <label class="filebtn secondary">Choose from library<input type="file" id="fileLib" accept="image/*"></label>
+      </div>
+      <div class="btnrow" style="margin-bottom:10px;">
+        <button class="small wide" id="loadSample">Try sample photo</button>
+      </div>
+      <span class="badge uncal" id="calibBadge">uncalibrated — assuming full frame = A2 landscape @ 2m</span>
     </div>
   </div>
 
