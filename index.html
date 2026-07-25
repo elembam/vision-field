@@ -171,6 +171,7 @@
       </div>
       <div class="btnrow" style="margin-bottom:10px;">
         <button class="small wide" id="loadSample">Try sample photo</button>
+        <button class="small wide" id="loadColorGamut">Try color gamut sample</button>
       </div>
       <span class="badge uncal" id="calibBadge">uncalibrated — assuming full frame = A2 landscape @ 2m</span>
     </div>
@@ -287,15 +288,17 @@ async function loadImageFile(file){
 }
 document.getElementById('fileCam').addEventListener('change', e=>{ if(e.target.files[0]) loadImageFile(e.target.files[0]); });
 document.getElementById('fileLib').addEventListener('change', e=>{ if(e.target.files[0]) loadImageFile(e.target.files[0]); });
-document.getElementById('loadSample').addEventListener('click', async ()=>{
+async function loadBundledSample(url, label){
   try{
-    const resp = await fetch('sample.png');
+    const resp = await fetch(url);
     const blob = await resp.blob();
     loadImageFile(blob);
   }catch(err){
-    alert('Could not load the sample photo: '+err.message);
+    alert(`Could not load the ${label}: `+err.message);
   }
-});
+}
+document.getElementById('loadSample').addEventListener('click', ()=>loadBundledSample('sample.png', 'sample photo'));
+document.getElementById('loadColorGamut').addEventListener('click', ()=>loadBundledSample('sample-colors.png', 'color gamut sample'));
 
 function defaultFocal(){ return workW*DEFAULT_REF_DIST_CM/DEFAULT_REF_WIDTH_CM; }
 function currentFocal(){ return focalLengthPx || defaultFocal(); }
