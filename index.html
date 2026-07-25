@@ -660,22 +660,34 @@ const BLUR_GAIN_POWER = 2;
 // cutoffCyclesPerDeg(e)/ppd exactly as-is — only the mapping from
 // eccentricity to a render parameter changes (spacing instead of sigma).
 //
-// density(e) ~= POINT_DENSITY_GAIN * cutoff(e)^2 points/deg^2 (standard
-// 2D-Nyquist reasoning: resolving F cycles/deg on both axes needs ~(2F)^2
-// samples/deg^2). Spacing (points/length) relates to density (points/area)
-// by spacing ~= 1/sqrt(density), giving the pixel-space formula below via
-// the same ppd used everywhere else. Unlike the blur excess term, this is
-// a plain reciprocal — no near-equal-number subtraction, no precision risk.
-// POINT_DENSITY_GAIN and the two spacing clamps are rendering-visibility
-// choices, same convention as BLUR_VISIBILITY_GAIN — not physiological,
-// not citations, safe to retune by eye without touching E2/FOVEAL_ACUITY.
+// Spacing grows from a MIN_POINT_SPACING_PX baseline at the fixation point
+// via an eccentricity-dependent "excess" term, exactly mirroring how blur's
+// sigma is built (see BLUR_GAIN_POWER's comment above): excess = (eDeg/E2)
+// is zero at the fixation point and grows with eccentricity (same E2 scale
+// blur's excess uses — not touching E2 itself, just reusing it as an
+// angular-scale reference); raising it to POINT_GAIN_POWER before scaling
+// keeps the near-fixation region flatter/denser while still sparsifying
+// strongly further out. Without an analogous power term here (an earlier
+// version used a plain "ppd/(sqrt(gain)*cutoff)" reciprocal, linear in
+// eDeg), point cloud's density fell off proportionally faster than blur's
+// — measured via matching both modes' "50%-of-own-range" eccentricity:
+// point cloud reached it ~4-5 degrees sooner than blur under the same
+// fixation/focal, and it was visible, not just numeric (zone rings that
+// aligned correctly with blur's own falloff sat visibly "too early"
+// relative to point cloud's). POINT_DENSITY_GAIN and POINT_GAIN_POWER are
+// rendering-visibility choices, same convention as BLUR_VISIBILITY_GAIN/
+// BLUR_GAIN_POWER — not physiological, not citations, safe to retune by
+// eye without touching E2/FOVEAL_ACUITY. Retuned together (not gain
+// alone) specifically to correct the *shape* mismatch, not just overall
+// density — verified across multiple photos/fixations, not just one.
 //
 // Note: real Poisson-disk packing only achieves ~60-70% of the naive
 // 1/spacing^2 point count for a given minimum spacing — not a bug, the
 // empirical gain below already absorbs it (same as BLUR_VISIBILITY_GAIN
 // absorbs its own perceptual fudge factor). Don't "fix" this later by
 // inserting a hex-packing correction constant.
-const POINT_DENSITY_GAIN = 0.18;
+const POINT_DENSITY_GAIN = 0.002;
+const POINT_GAIN_POWER = 2;
 const MIN_POINT_SPACING_PX = 2;
 const MAX_POINT_SPACING_PX = 34; // ~17x MIN, bounds worst-case neighbor-scan cost during generation
 // Point generation happens in a separate, smaller coordinate space than
@@ -683,12 +695,19 @@ const MAX_POINT_SPACING_PX = 34; // ~17x MIN, bounds worst-case neighbor-scan co
 // pattern (iOS memory safety). Bounds worst-case candidate count/runtime
 // regardless of source photo resolution; color is still sampled from the
 // full-resolution srcCanvas afterward, so this only bounds placement cost.
-const POINT_GEN_MAX_W = 900;
+// Lowered from 900 when POINT_GAIN_POWER was introduced above: matching
+// blur's falloff shape means more of the frame sits near minimum spacing
+// than the old linear formula did, which alone pushed point count from
+// ~10K to ~57K (71% of POINT_COUNT_CEILING) and generation time to ~2.5s
+// at the old 900 cap. 450 brings both back down (~18K points, ~1s) with
+// no visible loss of fovea placement fidelity — verified via screenshot,
+// not just the numbers.
+const POINT_GEN_MAX_W = 450;
 const POINT_COUNT_CEILING = 80000; // hard ceiling, independent of the resolution cap above
 
 function minSpacingPx(eDeg, ppd){
-  const cutoff = cutoffCyclesPerDeg(eDeg);
-  const spacing = ppd / (Math.sqrt(POINT_DENSITY_GAIN) * cutoff);
+  const excess = eDeg/E2;
+  const spacing = MIN_POINT_SPACING_PX + POINT_DENSITY_GAIN*ppd*Math.pow(excess, POINT_GAIN_POWER);
   return Math.min(MAX_POINT_SPACING_PX, Math.max(MIN_POINT_SPACING_PX, spacing));
 }
 
