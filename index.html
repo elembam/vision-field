@@ -789,7 +789,7 @@ function minSpacingPx(eDeg, ppd){
 // max(spacing(candidate), spacing(neighbor)) from every nearby existing
 // point — max(), not average/sum, since this is already a full center-to-
 // center spacing value, not a disk radius meant to be summed on contact.
-function generatePoissonDiskPoints(width, height, cx, cy, focal, k){
+function generatePoissonDiskPoints(width, height, centers, focal, k){
   const ppd = pxPerDegree0(focal);
   const cellSize = MIN_POINT_SPACING_PX / Math.SQRT2;
   const gridW = Math.ceil(width/cellSize), gridH = Math.ceil(height/cellSize);
@@ -800,8 +800,13 @@ function generatePoissonDiskPoints(width, height, cx, cy, focal, k){
   function gridIndex(x,y){
     return Math.floor(y/cellSize)*gridW + Math.floor(x/cellSize);
   }
+  // Multi-fixation, stage 2 (hard min): eccentricity to the NEAREST fixation
+  // point wins, same shape as the WebGL shader's min() over uFixationUV[].
+  // Stage 3 replaces this with the same soft-min combination used there.
   function spacingAt(x,y){
-    const eDeg = Math.atan(Math.hypot(x-cx, y-cy)/focal)*180/Math.PI;
+    let rPx = Infinity;
+    for(const c of centers) rPx = Math.min(rPx, Math.hypot(x-c.x, y-c.y));
+    const eDeg = Math.atan(rPx/focal)*180/Math.PI;
     return minSpacingPx(eDeg, ppd);
   }
   function farEnoughFromExisting(x, y, spacing){
@@ -833,9 +838,23 @@ function generatePoissonDiskPoints(width, height, cx, cy, focal, k){
     active.push(idx);
   }
 
-  const startX = cx>=0&&cx<width ? cx : width/2;
-  const startY = cy>=0&&cy<height ? cy : height/2;
-  addPoint(startX, startY, spacingAt(startX,startY));
+  // Seed from EVERY fixation point, not just one -- Bridson's algorithm
+  // grows outward from active points via local annulus sampling, so a
+  // single seed could take a long time (or, pathologically, fail) to
+  // organically propagate dense coverage out to a distant second fixation.
+  // farEnoughFromExisting also guards against duplicate/near-duplicate
+  // seeds if two fixations happen to sit very close together.
+  let seeded = false;
+  centers.forEach(c=>{
+    const sx = c.x>=0&&c.x<width ? c.x : width/2;
+    const sy = c.y>=0&&c.y<height ? c.y : height/2;
+    const spacing = spacingAt(sx,sy);
+    if(farEnoughFromExisting(sx,sy,spacing)){
+      addPoint(sx,sy,spacing);
+      seeded = true;
+    }
+  });
+  if(!seeded) addPoint(width/2, height/2, spacingAt(width/2,height/2));
 
   // Wall-clock ceiling, independent of POINT_COUNT_CEILING: cheap insurance
   // against any future gain/clamp retuning mistake stalling generation —
@@ -905,17 +924,28 @@ function renderCanvas2DFallback(focal, ppd, octx){
     const rInner = focal*Math.tan(toRad(band.inner));
     const feather = Math.max(4, (rOuter-rInner)*0.35);
 
+    // Multi-fixation, hard min: union the mask across every fixation point
+    // so a pixel stays opaque (keeps this band's blur level) if it's within
+    // this band's radius of ANY fixation, not just one. Built on a separate
+    // mask canvas with additive ('lighter') compositing across per-fixation
+    // gradients -- alpha clamps at 1 regardless of how many gradients
+    // overlap at a given pixel, which is exactly the "opaque if near any
+    // fixation" union wanted here, not just a convenient side effect.
+    const maskCanvas = document.createElement('canvas');
+    maskCanvas.width = workW; maskCanvas.height = workH;
+    const mctx = maskCanvas.getContext('2d');
+    mctx.globalCompositeOperation = 'lighter';
+    fixations.forEach(f=>{
+      const grad = mctx.createRadialGradient(f.x,f.y, Math.max(0,rOuter-feather), f.x,f.y, rOuter);
+      grad.addColorStop(0,'rgba(255,255,255,1)');
+      grad.addColorStop(1,'rgba(255,255,255,0)');
+      mctx.fillStyle = grad;
+      mctx.fillRect(0,0,workW,workH);
+    });
+
     const lctx = layer.getContext('2d');
-    // Stage 1 interim: primary fixation only — Stage 2 generalizes this
-    // fallback path too (lower priority than the WebGL/point-cloud paths,
-    // but not skipped, since any browser without WebGL2 falls back here).
-    const primary = fixations[0];
-    const grad = lctx.createRadialGradient(primary.x,primary.y, Math.max(0,rOuter-feather), primary.x,primary.y, rOuter);
-    grad.addColorStop(0,'rgba(255,255,255,1)');
-    grad.addColorStop(1,'rgba(255,255,255,0)');
     lctx.globalCompositeOperation='destination-in';
-    lctx.fillStyle = grad;
-    lctx.fillRect(0,0,workW,workH);
+    lctx.drawImage(maskCanvas,0,0);
 
     octx.drawImage(layer,0,0);
   }
@@ -944,7 +974,14 @@ void main(){
 const GL_FRAG_SRC = `#version 300 es
 precision highp float;
 uniform sampler2D uImage;
-uniform vec2 uFixationUV;
+// Multi-fixation, stage 2 (hard min -- stage 3 replaces this with a soft
+// blend, same array, same "one combined eDeg feeds the unchanged math
+// below" shape). Fixed-size array (WebGL needs a compile-time size);
+// slots beyond the actual fixation count are set to a UV far outside
+// [0,1] on the JS side, so they multiply out to a huge rPx and never win
+// the min() below -- avoids needing a separate uNumFixations uniform or
+// any dynamic branching over the array.
+uniform vec2 uFixationUV[6];
 uniform vec2 uResolution;
 uniform float uFocalPx;
 uniform float uE2;
@@ -955,8 +992,11 @@ uniform float uMaxLod;
 in vec2 vUv;
 out vec4 fragColor;
 void main(){
-  vec2 pxOffset = (vUv - uFixationUV) * uResolution;
-  float rPx = length(pxOffset);
+  float rPx = 1.0e9;
+  for(int i=0;i<6;i++){
+    vec2 pxOffset = (vUv - uFixationUV[i]) * uResolution;
+    rPx = min(rPx, length(pxOffset));
+  }
   float eDeg = degrees(atan(rPx / uFocalPx));
   float ppd = uFocalPx * (3.14159265 / 180.0);
   // GAIN amplifies only the eccentricity-DEPENDENT excess over the fovea's
@@ -1027,9 +1067,12 @@ function initGL(){
   const texture = gl.createTexture();
 
   const uniforms = {};
-  ['uImage','uFixationUV','uResolution','uFocalPx','uE2','uFovealAcuity','uGain','uGainPower','uMaxLod'].forEach(name=>{
+  ['uImage','uResolution','uFocalPx','uE2','uFovealAcuity','uGain','uGainPower','uMaxLod'].forEach(name=>{
     uniforms[name] = gl.getUniformLocation(program, name);
   });
+  // Array uniform: query with the "[0]" suffix for cross-browser correctness
+  // (some WebGL2 implementations require it for array uniform locations).
+  uniforms.uFixationUV = gl.getUniformLocation(program, 'uFixationUV[0]');
 
   // This app has already hit one real iOS memory-pressure crash
   // (HANDOVER.md) — treat context loss as an expected, recoverable case
@@ -1079,10 +1122,15 @@ function renderWebGL(focal){
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.uniform1i(uniforms.uImage, 0);
-  // Stage 1 interim: uses only the primary (first) fixation point, exactly
-  // preserving today's single-fixation behavior. Stage 2 generalizes the
-  // shader itself to combine eccentricity across all fixations.
-  gl.uniform2f(uniforms.uFixationUV, fixations[0].x/workW, fixations[0].y/workH);
+  // Fill all 6 array slots; unused ones get a UV far outside [0,1] so they
+  // multiply out to a huge rPx in the shader and never win the min() there.
+  const fixUV = new Float32Array(MAX_FIXATIONS*2);
+  for(let i=0;i<MAX_FIXATIONS;i++){
+    const f = fixations[i];
+    fixUV[i*2]   = f ? f.x/workW : -1000;
+    fixUV[i*2+1] = f ? f.y/workH : -1000;
+  }
+  gl.uniform2fv(uniforms.uFixationUV, fixUV);
   gl.uniform2f(uniforms.uResolution, workW, workH);
   gl.uniform1f(uniforms.uFocalPx, focal);
   gl.uniform1f(uniforms.uE2, E2);
@@ -1120,11 +1168,9 @@ function renderPointCloud(focal, octx){
   const internalScale = workW>POINT_GEN_MAX_W ? POINT_GEN_MAX_W/workW : 1;
   const genW = Math.round(workW*internalScale), genH = Math.round(workH*internalScale);
   const genFocal = focal*internalScale;
-  // Stage 1 interim: primary fixation only, same as the WebGL path above —
-  // Stage 2 generalizes generatePoissonDiskPoints itself to all fixations.
-  const genCx = fixations[0].x*internalScale, genCy = fixations[0].y*internalScale;
+  const genCenters = fixations.map(f=>({x:f.x*internalScale, y:f.y*internalScale}));
 
-  const points = generatePoissonDiskPoints(genW, genH, genCx, genCy, genFocal, 50);
+  const points = generatePoissonDiskPoints(genW, genH, genCenters, genFocal, 50);
   const invScale = 1/internalScale;
 
   // Background first, points drawn on top.
