@@ -106,7 +106,10 @@
         <div class="handle" id="handleB" style="left:65%;top:50%;"></div>
       </div>
     </div>
-    <div class="note" id="tapNote" style="display:none;">Tap anywhere on the image to set the fixation point (the crosshair).</div>
+    <div class="note" id="tapNote" style="display:none;">Tap anywhere on the image to add a fixation point (up to 6). Tap an existing marker to remove it.</div>
+    <div class="btnrow" id="clearFixationsRow" style="display:none;margin-top:8px;">
+      <button class="small danger wide" id="clearFixations">Clear all fixation points</button>
+    </div>
   </div>
 
   <div class="section" id="scenePanel" style="display:none;">
@@ -131,7 +134,7 @@
       <div class="legend" id="legendSceneElev"></div>
     </div>
     <div class="box" style="margin-top:10px;">
-      <div class="note" style="margin-top:0;">Face-on &mdash; acuity zones on the real object, at your current fixation point (tap the photo above to move it).</div>
+      <div class="note" style="margin-top:0;">Face-on &mdash; acuity zones on the real object, at your first fixation point (tap the photo above to add/remove fixation points; this diagram reflects only the first one).</div>
       <svg id="svgSceneFace" viewBox="0 0 320 320" style="width:100%;max-width:320px;height:auto;display:block;margin:0 auto;"></svg>
       <div class="legend" id="legendSceneFace"></div>
     </div>
@@ -207,6 +210,7 @@ const ctx = canvas.getContext('2d');
 const canvasWrap = document.getElementById('canvasWrap');
 const placeholder = document.getElementById('placeholder');
 const tapNote = document.getElementById('tapNote');
+const clearFixationsRow = document.getElementById('clearFixationsRow');
 const calibSection = document.getElementById('calibSection');
 const renderSection = document.getElementById('renderSection');
 const scenePanel = document.getElementById('scenePanel');
@@ -214,7 +218,15 @@ const calibBadge = document.getElementById('calibBadge');
 
 let srcCanvas = null;
 let workW=0, workH=0;
-let fixation = null;
+// Array of {x,y}, in placement order, always length >= 1 once an image is
+// loaded. Multi-fixation: a static composite where several focal areas are
+// each rendered at their own "moment of sharpness" (HANDOVER.md #7), not
+// an animated scanpath. Tapping the image adds a point (up to
+// MAX_FIXATIONS); tapping an existing marker removes it (except the last
+// remaining one — there must always be at least one fixation for the
+// render math to work against).
+let fixations = [];
+const MAX_FIXATIONS = 6;
 let focalLengthPx = null;
 // Shooting distance (cm from camera to subject at photo time) — previously
 // computed transiently just to solve for focalLengthPx, then discarded.
@@ -276,11 +288,12 @@ async function loadImageFile(file){
   canvas.style.display='block';
   placeholder.style.display='none';
   tapNote.style.display='block';
+  clearFixationsRow.style.display='block';
   calibSection.style.display='block';
   scenePanel.style.display='block';
   renderSection.style.display='block';
 
-  fixation = {x:workW/2, y:workH/2};
+  fixations = [{x:workW/2, y:workH/2}];
   focalLengthPx = null;
   window.__lastRender = null; // new photo — any prior blur render is stale
   updateBadge();
@@ -333,36 +346,51 @@ function drawPreview(){
   if(!srcCanvas) return;
   ctx.clearRect(0,0,workW,workH);
   ctx.drawImage(srcCanvas,0,0);
-  drawFixationMarker();
+  drawFixationMarkers();
   if(showRings) drawRings();
   renderSceneSetup();
 }
 
-function drawFixationMarker(){
-  if(!fixation) return;
-  ctx.save();
-  ctx.strokeStyle='#fff'; ctx.lineWidth=Math.max(1.5, workW/500);
+function drawFixationMarkers(){
+  if(!fixations.length) return;
   const s = Math.max(10, workW/60);
-  ctx.beginPath();
-  ctx.moveTo(fixation.x-s, fixation.y); ctx.lineTo(fixation.x+s, fixation.y);
-  ctx.moveTo(fixation.x, fixation.y-s); ctx.lineTo(fixation.x, fixation.y+s);
-  ctx.stroke();
-  ctx.beginPath(); ctx.arc(fixation.x, fixation.y, 3, 0, 7); ctx.fillStyle='#fff'; ctx.fill();
-  ctx.restore();
+  fixations.forEach((f,i)=>{
+    ctx.save();
+    ctx.strokeStyle='#fff'; ctx.lineWidth=Math.max(1.5, workW/500);
+    ctx.beginPath();
+    ctx.moveTo(f.x-s, f.y); ctx.lineTo(f.x+s, f.y);
+    ctx.moveTo(f.x, f.y-s); ctx.lineTo(f.x, f.y+s);
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(f.x, f.y, 3, 0, 7); ctx.fillStyle='#fff'; ctx.fill();
+    if(fixations.length>1){
+      // numbered label in placement order, only shown once there's more
+      // than one point to disambiguate (matches single-fixation look today)
+      ctx.font = `600 ${Math.max(11,workW/55)}px 'IBM Plex Mono',monospace`;
+      ctx.textBaseline='bottom';
+      ctx.lineWidth=3; ctx.strokeStyle='#0c1116';
+      ctx.strokeText(String(i+1), f.x+s*0.8, f.y-s*0.8);
+      ctx.fillStyle='#fff';
+      ctx.fillText(String(i+1), f.x+s*0.8, f.y-s*0.8);
+    }
+    ctx.restore();
+  });
 }
 
 function drawRings(){
   const focal = effectiveFocal();
   ctx.save();
   ctx.lineWidth = Math.max(1.5, workW/450);
-  ZONES.forEach(z=>{
-    const r = focal*Math.tan(toRad(z.angle)/2);
-    ctx.strokeStyle = REAL[z.key];
-    ctx.beginPath(); ctx.arc(fixation.x, fixation.y, r, 0, 7); ctx.stroke();
+  fixations.forEach(f=>{
+    ZONES.forEach(z=>{
+      const r = focal*Math.tan(toRad(z.angle)/2);
+      ctx.strokeStyle = REAL[z.key];
+      ctx.beginPath(); ctx.arc(f.x, f.y, r, 0, 7); ctx.stroke();
+    });
+    const rc = focal*Math.tan(toRad(COMFORT_ANGLE)/2);
+    ctx.strokeStyle = '#cccccc'; ctx.setLineDash([8,6]);
+    ctx.beginPath(); ctx.arc(f.x, f.y, rc, 0, 7); ctx.stroke();
+    ctx.setLineDash([]);
   });
-  const rc = focal*Math.tan(toRad(COMFORT_ANGLE)/2);
-  ctx.strokeStyle = '#cccccc'; ctx.setLineDash([8,6]);
-  ctx.beginPath(); ctx.arc(fixation.x, fixation.y, rc, 0, 7); ctx.stroke();
   ctx.restore();
 }
 
@@ -371,8 +399,25 @@ canvasWrap.addEventListener('pointerdown', (e)=>{
   if(!srcCanvas) return;
   const rect = canvas.getBoundingClientRect();
   const scaleX = workW/rect.width, scaleY = workH/rect.height;
-  fixation = {x:(e.clientX-rect.left)*scaleX, y:(e.clientY-rect.top)*scaleY};
-  window.__lastRender = null; // fixation moved — any prior blur render is stale
+  const x = (e.clientX-rect.left)*scaleX, y = (e.clientY-rect.top)*scaleY;
+
+  // Tap an existing marker to remove it (never below 1 remaining); tap
+  // elsewhere to add a new point (up to MAX_FIXATIONS; a no-op past the cap).
+  const hitRadius = Math.max(10, workW/60); // matches the marker's own drawn size
+  const hitIdx = fixations.findIndex(f => Math.hypot(f.x-x, f.y-y) <= hitRadius);
+  if(hitIdx >= 0){
+    if(fixations.length>1) fixations.splice(hitIdx,1);
+  } else if(fixations.length<MAX_FIXATIONS){
+    fixations.push({x,y});
+  }
+  window.__lastRender = null; // fixation set changed — any prior render is stale
+  drawPreview();
+});
+
+document.getElementById('clearFixations').addEventListener('click', ()=>{
+  if(!srcCanvas) return;
+  fixations = [{x:workW/2, y:workH/2}]; // back to the same single-center default as on load, not zero
+  window.__lastRender = null;
   drawPreview();
 });
 
@@ -535,8 +580,12 @@ function renderSceneSetup(){
   renderScenePanel(document.getElementById('svgScenePlan'), document.getElementById('legendScenePlan'), nearWCm/2, farWCm/2, shootDist, farDCm);
   renderScenePanel(document.getElementById('svgSceneElev'), document.getElementById('legendSceneElev'), nearHCm/2, farHCm/2, shootDist, farDCm);
 
-  const fixXpct = fixation ? (fixation.x/workW*100) : 50;
-  const fixYpct = fixation ? (fixation.y/workH*100) : 50;
+  // Scope cut: with multiple fixation points, this diagram still shows only
+  // the FIRST one — a full multi-point redesign of the face-on view is a
+  // separate, larger scope than this pass.
+  const primary = fixations[0];
+  const fixXpct = primary ? (primary.x/workW*100) : 50;
+  const fixYpct = primary ? (primary.y/workH*100) : 50;
   renderSceneFace(document.getElementById('svgSceneFace'), document.getElementById('legendSceneFace'), farWCm, farHCm, farDCm, fixXpct, fixYpct);
 }
 
@@ -627,7 +676,7 @@ document.getElementById('toggleRings').addEventListener('click', (e)=>{
   const base = window.__lastRender || srcCanvas;
   ctx.clearRect(0,0,workW,workH);
   ctx.drawImage(base,0,0);
-  drawFixationMarker();
+  drawFixationMarkers();
   if(showRings) drawRings();
 });
 
@@ -857,7 +906,11 @@ function renderCanvas2DFallback(focal, ppd, octx){
     const feather = Math.max(4, (rOuter-rInner)*0.35);
 
     const lctx = layer.getContext('2d');
-    const grad = lctx.createRadialGradient(fixation.x,fixation.y, Math.max(0,rOuter-feather), fixation.x,fixation.y, rOuter);
+    // Stage 1 interim: primary fixation only — Stage 2 generalizes this
+    // fallback path too (lower priority than the WebGL/point-cloud paths,
+    // but not skipped, since any browser without WebGL2 falls back here).
+    const primary = fixations[0];
+    const grad = lctx.createRadialGradient(primary.x,primary.y, Math.max(0,rOuter-feather), primary.x,primary.y, rOuter);
     grad.addColorStop(0,'rgba(255,255,255,1)');
     grad.addColorStop(1,'rgba(255,255,255,0)');
     lctx.globalCompositeOperation='destination-in';
@@ -1026,7 +1079,10 @@ function renderWebGL(focal){
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.uniform1i(uniforms.uImage, 0);
-  gl.uniform2f(uniforms.uFixationUV, fixation.x/workW, fixation.y/workH);
+  // Stage 1 interim: uses only the primary (first) fixation point, exactly
+  // preserving today's single-fixation behavior. Stage 2 generalizes the
+  // shader itself to combine eccentricity across all fixations.
+  gl.uniform2f(uniforms.uFixationUV, fixations[0].x/workW, fixations[0].y/workH);
   gl.uniform2f(uniforms.uResolution, workW, workH);
   gl.uniform1f(uniforms.uFocalPx, focal);
   gl.uniform1f(uniforms.uE2, E2);
@@ -1064,7 +1120,9 @@ function renderPointCloud(focal, octx){
   const internalScale = workW>POINT_GEN_MAX_W ? POINT_GEN_MAX_W/workW : 1;
   const genW = Math.round(workW*internalScale), genH = Math.round(workH*internalScale);
   const genFocal = focal*internalScale;
-  const genCx = fixation.x*internalScale, genCy = fixation.y*internalScale;
+  // Stage 1 interim: primary fixation only, same as the WebGL path above —
+  // Stage 2 generalizes generatePoissonDiskPoints itself to all fixations.
+  const genCx = fixations[0].x*internalScale, genCy = fixations[0].y*internalScale;
 
   const points = generatePoissonDiskPoints(genW, genH, genCx, genCy, genFocal, 50);
   const invScale = 1/internalScale;
@@ -1105,13 +1163,13 @@ function renderPointCloud(focal, octx){
 }
 
 document.getElementById('applyBtn').addEventListener('click', ()=>{
-  if(!srcCanvas || !fixation) return;
+  if(!srcCanvas || !fixations.length) return;
   try{
     const focal = effectiveFocal();
     const ppd = pxPerDegree0(focal);
 
     document.getElementById('debugInfo').textContent =
-      `debug — workW:${workW} workH:${workH} fixation:(${fixation.x.toFixed(0)},${fixation.y.toFixed(0)})\n`+
+      `debug — workW:${workW} workH:${workH} fixations:${fixations.length} primary:(${fixations[0].x.toFixed(0)},${fixations[0].y.toFixed(0)})\n`+
       `focalLengthPx:${focalLengthPx} shootingDistCm:${shootingDistCm}\n`+
       `farD:${farD.value} farW:${farW.value} farH:${farH.value}\n`+
       `currentFocal:${currentFocal().toFixed(2)} currentShootingDist:${currentShootingDist()} currentFarDist:${currentFarDist()}\n`+
@@ -1134,7 +1192,7 @@ document.getElementById('applyBtn').addEventListener('click', ()=>{
 
     ctx.clearRect(0,0,workW,workH);
     ctx.drawImage(output,0,0);
-    drawFixationMarker();
+    drawFixationMarkers();
     if(showRings) drawRings();
 
     window.__lastRender = output;
