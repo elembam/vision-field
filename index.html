@@ -775,6 +775,71 @@ function minSpacingPx(eDeg, ppd){
   return Math.min(MAX_POINT_SPACING_PX, Math.max(MIN_POINT_SPACING_PX, spacing));
 }
 
+// ---- Multi-fixation stage 3: soft-min blend across fixation points ----
+// Stage 2's hard min() (nearest fixation wins) reads as a visible seam
+// between fixation regions. This softens that seam by replacing "distance
+// to the nearest fixation" with a softmax-weighted average of ALL
+// fixations' eccentricities, fed into the exact same unchanged downstream
+// math (minSpacingPx here, the blur sigma formula in the GL_FRAG_SRC
+// shader below) — the shader uses this identical formula, kept in lockstep
+// by hand since GLSL can't share a JS function.
+//
+// Softmax weighted average, not Shepard's inverse-distance-weighting:
+// IDW has a singularity at eDeg=0 (a point sitting exactly on a fixation)
+// needing an epsilon-guard/branch to avoid inf/inf — that matters more in
+// the GLSL shader (branch-free, per-pixel) than here, but both places use
+// the same formula so they can't silently drift apart.
+//
+// Bounded below by the true min BY CONSTRUCTION: this is a convex
+// combination (non-negative weights summing to 1), and convex combinations
+// of real numbers are mathematically confined to [min, max] of their
+// inputs — so the combined eDeg can never read "sharper" than the nearest
+// actual fixation would, satisfying the required hard constraint. Max-
+// subtraction stabilization (subtracting eDegMin before exponentiating) is
+// REQUIRED, not optional: without it, sum(exp(-eDeg_i/T)) underflows to
+// exactly 0 for large eDeg/small T, producing 0/0 = NaN. This rescaling is
+// exact, not approximate — dividing every weight by the same
+// exp(-eDegMin/T) factor cancels in the final ratio. The max(combined,
+// eDegMin) floor at the end guards only against float rounding drift; the
+// math already guarantees the bound.
+function combineEccentricitiesDeg(eDegs, tDeg){
+  let eDegMin = Infinity;
+  for(const e of eDegs) if(e<eDegMin) eDegMin = e;
+  let wSum = 0, wSumE = 0;
+  for(const e of eDegs){
+    const w = Math.exp(-(e-eDegMin)/tDeg);
+    wSum += w; wSumE += w*e;
+  }
+  return Math.max(wSumE/wSum, eDegMin);
+}
+
+// T ("blend temperature", in degrees) controls transition width: T->0
+// recovers stage 2's hard min exactly; larger T blends more fixations
+// together. A FIXED T looks right when fixations are far apart but
+// "swallows" two nearby fixations into one soft haze instead of two crisp
+// spots with a thin seam between them — so T scales with how close
+// together the fixations actually are (their smallest pairwise
+// separation), not a bare constant. With N=1 there's no seam and no second
+// fixation to measure a separation against — combineEccentricitiesDeg
+// returns eDegs[0] exactly regardless of T in that case, so T's value is
+// irrelevant to the N=1 regression case; T_MIN_DEG is returned purely so
+// callers always get a finite, sane number.
+const FIXATION_BLEND_RATIO = 0.35;
+const T_MIN_DEG = 0.15;
+const T_MAX_DEG = 3.0;
+function blendTempDeg(centers, focal){
+  if(centers.length<2) return T_MIN_DEG;
+  let minSepDeg = Infinity;
+  for(let i=0;i<centers.length;i++){
+    for(let j=i+1;j<centers.length;j++){
+      const distPx = Math.hypot(centers[i].x-centers[j].x, centers[i].y-centers[j].y);
+      const sepDeg = Math.atan(distPx/focal)*180/Math.PI;
+      if(sepDeg<minSepDeg) minSepDeg = sepDeg;
+    }
+  }
+  return Math.min(T_MAX_DEG, Math.max(T_MIN_DEG, FIXATION_BLEND_RATIO*minSepDeg));
+}
+
 // Variable-density Poisson-disk sampling (Bridson, "Fast Poisson Disk
 // Sampling in Arbitrary Dimensions", 2007), adapted for a spatially-
 // varying minimum spacing via a density function instead of a constant
@@ -800,13 +865,14 @@ function generatePoissonDiskPoints(width, height, centers, focal, k){
   function gridIndex(x,y){
     return Math.floor(y/cellSize)*gridW + Math.floor(x/cellSize);
   }
-  // Multi-fixation, stage 2 (hard min): eccentricity to the NEAREST fixation
-  // point wins, same shape as the WebGL shader's min() over uFixationUV[].
-  // Stage 3 replaces this with the same soft-min combination used there.
+  // Multi-fixation, stage 3 (soft min): per-center eccentricity combined via
+  // combineEccentricitiesDeg, same formula the WebGL shader applies to
+  // uFixationUV[] below — see that function's comment for why this is
+  // bounded below by the true nearest-fixation eccentricity.
+  const tDeg = blendTempDeg(centers, focal);
   function spacingAt(x,y){
-    let rPx = Infinity;
-    for(const c of centers) rPx = Math.min(rPx, Math.hypot(x-c.x, y-c.y));
-    const eDeg = Math.atan(rPx/focal)*180/Math.PI;
+    const eDegs = centers.map(c => Math.atan(Math.hypot(x-c.x, y-c.y)/focal)*180/Math.PI);
+    const eDeg = combineEccentricitiesDeg(eDegs, tDeg);
     return minSpacingPx(eDeg, ppd);
   }
   function farEnoughFromExisting(x, y, spacing){
@@ -974,13 +1040,11 @@ void main(){
 const GL_FRAG_SRC = `#version 300 es
 precision highp float;
 uniform sampler2D uImage;
-// Multi-fixation, stage 2 (hard min -- stage 3 replaces this with a soft
-// blend, same array, same "one combined eDeg feeds the unchanged math
-// below" shape). Fixed-size array (WebGL needs a compile-time size);
-// slots beyond the actual fixation count are set to a UV far outside
-// [0,1] on the JS side, so they multiply out to a huge rPx and never win
-// the min() below -- avoids needing a separate uNumFixations uniform or
-// any dynamic branching over the array.
+// Multi-fixation, stage 3 (soft min). Fixed-size array (WebGL needs a
+// compile-time size); slots beyond the actual fixation count are set to a
+// UV far outside [0,1] on the JS side, so they produce a huge eDeg and
+// their softmax weight underflows to 0 below -- avoids needing a separate
+// uNumFixations uniform or any dynamic branching over the array.
 uniform vec2 uFixationUV[6];
 uniform vec2 uResolution;
 uniform float uFocalPx;
@@ -989,15 +1053,28 @@ uniform float uFovealAcuity;
 uniform float uGain;
 uniform float uGainPower;
 uniform float uMaxLod;
+// Blend "temperature" in degrees -- see combineEccentricitiesDeg's JS
+// comment (same formula, kept in lockstep by hand since GLSL can't share a
+// JS function) for the full derivation and the never-below-true-min proof.
+uniform float uBlendTempDeg;
 in vec2 vUv;
 out vec4 fragColor;
 void main(){
-  float rPx = 1.0e9;
+  float eDegs[6];
+  float eDegMin = 1.0e9;
   for(int i=0;i<6;i++){
     vec2 pxOffset = (vUv - uFixationUV[i]) * uResolution;
-    rPx = min(rPx, length(pxOffset));
+    float e = degrees(atan(length(pxOffset) / uFocalPx));
+    eDegs[i] = e;
+    eDegMin = min(eDegMin, e);
   }
-  float eDeg = degrees(atan(rPx / uFocalPx));
+  float wSum = 0.0, wSumE = 0.0;
+  for(int i=0;i<6;i++){
+    float w = exp(-(eDegs[i]-eDegMin)/uBlendTempDeg);
+    wSum += w;
+    wSumE += w*eDegs[i];
+  }
+  float eDeg = max(wSumE/wSum, eDegMin);
   float ppd = uFocalPx * (3.14159265 / 180.0);
   // GAIN amplifies only the eccentricity-DEPENDENT excess over the fovea's
   // own baseline, not the raw sigma directly — otherwise GAIN also
@@ -1067,7 +1144,7 @@ function initGL(){
   const texture = gl.createTexture();
 
   const uniforms = {};
-  ['uImage','uResolution','uFocalPx','uE2','uFovealAcuity','uGain','uGainPower','uMaxLod'].forEach(name=>{
+  ['uImage','uResolution','uFocalPx','uE2','uFovealAcuity','uGain','uGainPower','uMaxLod','uBlendTempDeg'].forEach(name=>{
     uniforms[name] = gl.getUniformLocation(program, name);
   });
   // Array uniform: query with the "[0]" suffix for cross-browser correctness
@@ -1138,6 +1215,7 @@ function renderWebGL(focal){
   gl.uniform1f(uniforms.uGain, BLUR_VISIBILITY_GAIN);
   gl.uniform1f(uniforms.uGainPower, BLUR_GAIN_POWER);
   gl.uniform1f(uniforms.uMaxLod, Math.floor(Math.log2(Math.max(workW,workH))));
+  gl.uniform1f(uniforms.uBlendTempDeg, blendTempDeg(fixations, focal));
 
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   return glCanvas;
